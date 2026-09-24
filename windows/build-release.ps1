@@ -74,16 +74,21 @@ if ($winswHash -ne "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3
 }
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/winsw/winsw/v2.12.0/LICENSE.txt" -OutFile (Join-Path $packageDir "LICENSE-WinSW.txt")
 
-$serviceData = Join-Path $packageDir "data"
+$serviceSmokeDir = Join-Path $buildDir "service-smoke"
+New-Item -ItemType Directory -Force $serviceSmokeDir | Out-Null
+Copy-Item (Join-Path $packageDir "BackendServer.exe"), $winsw, `
+  (Join-Path $packageDir "FirmMatterService.xml"), (Join-Path $packageDir "VERSION") $serviceSmokeDir -Force
+$serviceWrapper = Join-Path $serviceSmokeDir "FirmMatterService.exe"
+$serviceData = Join-Path $serviceSmokeDir "data"
 New-Item -ItemType Directory -Force $serviceData, (Join-Path $serviceData "logs") | Out-Null
 $serviceConfig = '{"bind_host":"127.0.0.1","port":18742,"public_host":""}'
 [System.IO.File]::WriteAllText((Join-Path $serviceData "server.json"), $serviceConfig, [System.Text.UTF8Encoding]::new($false))
 $serviceInstalled = $false
 try {
-  & $winsw install | Out-Null
+  & $serviceWrapper install | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Windows 服务安装失败" }
   $serviceInstalled = $true
-  & $winsw start | Out-Null
+  & $serviceWrapper start | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Windows 服务启动失败" }
   $serviceReady = $false
   for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -100,10 +105,9 @@ try {
   if (-not $serviceReady) { throw "Windows 服务未能提供当前版本 API" }
 } finally {
   if ($serviceInstalled) {
-    & $winsw stop | Out-Null
-    & $winsw uninstall | Out-Null
+    & $serviceWrapper stop | Out-Null
+    & $serviceWrapper uninstall | Out-Null
   }
-  Remove-Item $serviceData -Recurse -Force
 }
 
 $pythonInstaller = Join-Path $prerequisitesDir "python-3.11.9-amd64.exe"
