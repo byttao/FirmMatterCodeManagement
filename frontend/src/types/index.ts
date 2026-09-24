@@ -72,6 +72,7 @@ export interface ProjectMember {
 export interface Project {
   id: number
   project_id: string
+  fiscal_year: number
   firm: string
   report_type: string
   report_year: number

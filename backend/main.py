@@ -38,6 +38,25 @@ upgrade_database(engine)
 
 app = FastAPI(title="事务所项目编号管理系统", version=APP_VERSION)
 
+MIN_CONFIG_YEAR = 2000
+MAX_CONFIG_YEAR = 2100
+
+
+def normalize_required_text(value: str, label: str, max_length: int) -> str:
+    normalized = value.strip()
+    if not normalized or len(normalized) > max_length:
+        raise HTTPException(status_code=400, detail=f"{label}不能为空且不能超过 {max_length} 个字符")
+    return normalized
+
+
+def validate_config_year(year: int) -> int:
+    if year < MIN_CONFIG_YEAR or year > MAX_CONFIG_YEAR:
+        raise HTTPException(
+            status_code=400,
+            detail=f"年度必须在 {MIN_CONFIG_YEAR}-{MAX_CONFIG_YEAR} 之间",
+        )
+    return year
+
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]
 if cors_origins:
@@ -131,8 +150,7 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
         raise HTTPException(status_code=400, detail="管理员密码至少需要 8 位")
     if not real_name:
         raise HTTPException(status_code=400, detail="请输入管理员姓名")
-    if data.fiscal_year < 2000 or data.fiscal_year > 2100:
-        raise HTTPException(status_code=400, detail="请输入 2000-2100 之间的年度")
+    validate_config_year(data.fiscal_year)
     if not data.firms:
         raise HTTPException(status_code=400, detail="至少配置一个事务所")
 
@@ -344,13 +362,9 @@ async def set_current_fiscal_year(
 ):
     """设置当前操作年度"""
     fiscal_year = data.get("fiscal_year")
-    if not fiscal_year or not isinstance(fiscal_year, int):
+    if isinstance(fiscal_year, bool) or not isinstance(fiscal_year, int):
         raise HTTPException(status_code=400, detail="请提供有效的年度")
-
-    # 年度必须在合理范围内（当前年的前后5年）
-    current_year = datetime.now().year
-    if fiscal_year < current_year - 5 or fiscal_year > current_year + 1:
-        raise HTTPException(status_code=400, detail="年度超出允许范围")
+    validate_config_year(fiscal_year)
     if not db.query(models.FiscalYear.id).filter_by(year=fiscal_year).first():
         raise HTTPException(status_code=400, detail="该编号年度尚未配置")
 
@@ -930,8 +944,8 @@ def resolve_project(db: Session, project_id: str):
 
 @app.get("/api/projects", response_model=schemas.ProjectListResponse)
 async def list_projects(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     firm: Optional[str] = None,
     report_type: Optional[str] = None,
@@ -1345,7 +1359,7 @@ async def generate_report_number(
             detail=f"业务年度({project.report_year}年)不能超过编号年度({fiscal_year}年)"
         )
 
-    # 生成编号（使用当前操作年度，即编号年度，而非业务年度）
+    # 使用项目创建时保存的编号年度，与业务年度无关。
     try:
         report_no = generate_report_no(
             db, project.firm, project.report_type, fiscal_year
@@ -1566,12 +1580,13 @@ async def create_numbered_year(
     if not can_manage_fiscal_config(current_user):
         raise HTTPException(status_code=403, detail="无权限管理")
 
+    year = validate_config_year(data.year)
     # 检查是否已存在
-    existing = db.query(models.FiscalYear).filter(models.FiscalYear.year == data.year).first()
+    existing = db.query(models.FiscalYear).filter(models.FiscalYear.year == year).first()
     if existing:
         raise HTTPException(status_code=400, detail="该年度已存在")
 
-    fy = models.FiscalYear(year=data.year)
+    fy = models.FiscalYear(year=year)
     db.add(fy)
     db.commit()
     db.refresh(fy)
@@ -1615,6 +1630,7 @@ async def create_fiscal_year_firm(
     if not can_manage_fiscal_config(current_user):
         raise HTTPException(status_code=403, detail="无权限管理")
 
+    firm_name = normalize_required_text(data.firm, "事务所名称", 100)
     # 检查年度是否存在
     fy = db.query(models.FiscalYear).filter(models.FiscalYear.id == data.fiscal_year_id).first()
     if not fy:
@@ -1623,12 +1639,12 @@ async def create_fiscal_year_firm(
     # 检查是否已存在
     existing = db.query(models.FiscalYearFirm).filter(
         models.FiscalYearFirm.fiscal_year_id == data.fiscal_year_id,
-        models.FiscalYearFirm.firm == data.firm
+        models.FiscalYearFirm.firm == firm_name
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="该事务所在此年度已存在")
 
-    firm = models.FiscalYearFirm(fiscal_year_id=data.fiscal_year_id, firm=data.firm)
+    firm = models.FiscalYearFirm(fiscal_year_id=data.fiscal_year_id, firm=firm_name)
     db.add(firm)
     db.commit()
     db.refresh(firm)
@@ -1672,6 +1688,8 @@ async def create_report_number_rule(
     if db.get_bind().dialect.name == "sqlite":
         db.execute(text("BEGIN IMMEDIATE"))
 
+    rule_name = normalize_required_text(data.rule_name, "规则名称", 50)
+    template = normalize_required_text(data.template, "编号模板", 200)
     # 检查事务所是否存在
     firm = db.query(models.FiscalYearFirm).filter(models.FiscalYearFirm.id == data.fiscal_year_firm_id).first()
     if not firm:
@@ -1680,20 +1698,20 @@ async def create_report_number_rule(
     # 检查规则名是否已存在
     existing = db.query(models.ReportNumberRule).filter(
         models.ReportNumberRule.fiscal_year_firm_id == data.fiscal_year_firm_id,
-        models.ReportNumberRule.rule_name == data.rule_name
+        models.ReportNumberRule.rule_name == rule_name
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="该规则名称已存在")
 
-    sequence_digits = validate_setup_template(data.template)
+    sequence_digits = validate_setup_template(template)
     if 'sequence_digits' in data.__fields_set__ and data.sequence_digits != sequence_digits:
         raise HTTPException(status_code=400, detail="编号位数必须与模板序号占位符一致")
-    ensure_unique_numbering_format(db, data.template, firm.fiscal_year.year)
+    ensure_unique_numbering_format(db, template, firm.fiscal_year.year)
 
     rule = models.ReportNumberRule(
         fiscal_year_firm_id=data.fiscal_year_firm_id,
-        rule_name=data.rule_name,
-        template=data.template,
+        rule_name=rule_name,
+        template=template,
         sequence_digits=sequence_digits
     )
     db.add(rule)
@@ -1722,6 +1740,10 @@ async def update_report_number_rule(
     changes = data.dict(exclude_unset=True)
     if any(value is None for value in changes.values()):
         raise HTTPException(status_code=400, detail="规则字段不能为空")
+    if 'rule_name' in changes:
+        changes['rule_name'] = normalize_required_text(changes['rule_name'], "规则名称", 50)
+    if 'template' in changes:
+        changes['template'] = normalize_required_text(changes['template'], "编号模板", 200)
     if 'rule_name' in changes and changes['rule_name'] != rule.rule_name:
         if db.query(models.ReportNumberRule.id).filter_by(
             fiscal_year_firm_id=rule.fiscal_year_firm_id, rule_name=changes['rule_name']
@@ -1779,6 +1801,7 @@ async def create_fiscal_year_report_type(
     if not can_manage_fiscal_config(current_user):
         raise HTTPException(status_code=403, detail="无权限管理")
 
+    report_type = normalize_required_text(data.report_type, "业务类型名称", 100)
     # 检查事务所是否存在
     firm = db.query(models.FiscalYearFirm).filter(models.FiscalYearFirm.id == data.fiscal_year_firm_id).first()
     if not firm:
@@ -1794,14 +1817,14 @@ async def create_fiscal_year_report_type(
     # 检查业务类型是否已存在
     existing = db.query(models.FiscalYearReportType).filter(
         models.FiscalYearReportType.fiscal_year_firm_id == data.fiscal_year_firm_id,
-        models.FiscalYearReportType.report_type == data.report_type
+        models.FiscalYearReportType.report_type == report_type
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="该业务类型已存在")
 
     rt = models.FiscalYearReportType(
         fiscal_year_firm_id=data.fiscal_year_firm_id,
-        report_type=data.report_type,
+        report_type=report_type,
         rule_id=data.rule_id
     )
     db.add(rt)
@@ -1824,6 +1847,9 @@ async def update_fiscal_year_report_type(
     rt = db.query(models.FiscalYearReportType).filter(models.FiscalYearReportType.id == rt_id).first()
     if not rt:
         raise HTTPException(status_code=404, detail="业务类型不存在")
+
+    if data.report_type is not None:
+        data.report_type = normalize_required_text(data.report_type, "业务类型名称", 100)
 
     # 更新业务类型名称
     if data.report_type is not None and data.report_type != rt.report_type:

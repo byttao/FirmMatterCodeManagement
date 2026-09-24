@@ -33,23 +33,23 @@ export default function SignedProjects() {
     <div className="space-y-4">
       <div className="flex items-baseline justify-between gap-4">
         <h1 className="text-2xl font-bold">我签字的项目</h1>
-        <span className="text-sm text-muted-foreground">{fiscalYear} 年度 · 共 {total} 项</span>
+        <span className="text-sm text-muted-foreground">{fiscalYear} 编号年度 · 共 {total} 项</span>
       </div>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <div className="overflow-x-auto border rounded-md">
         <Table>
           <TableHeader><TableRow>
             <TableHead>项目编号</TableHead><TableHead>客户</TableHead><TableHead>事务所</TableHead>
-            <TableHead>业务类型</TableHead><TableHead>报告编号</TableHead><TableHead>项目状态</TableHead>
+            <TableHead>业务类型</TableHead><TableHead>业务年度</TableHead><TableHead>报告编号</TableHead><TableHead>项目状态</TableHead>
             <TableHead className="w-16">查看</TableHead>
           </TableRow></TableHeader>
           <TableBody>
-            {loading ? <TableRow><TableCell colSpan={7} className="text-center py-8">加载中...</TableCell></TableRow>
-              : items.length === 0 ? <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">暂无签字项目</TableCell></TableRow>
+            {loading ? <TableRow><TableCell colSpan={8} className="text-center py-8">加载中...</TableCell></TableRow>
+              : items.length === 0 ? <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">暂无签字项目</TableCell></TableRow>
               : items.map(project => <TableRow key={project.id}>
                 <TableCell className="font-mono">{project.project_id}</TableCell>
                 <TableCell>{project.customer_name}</TableCell><TableCell>{project.firm}</TableCell>
-                <TableCell>{project.report_type}</TableCell><TableCell>{project.report_no || '-'}</TableCell>
+                <TableCell>{project.report_type}</TableCell><TableCell>{project.report_year} 年</TableCell><TableCell>{project.report_no || '-'}</TableCell>
                 <TableCell>{project.project_status}</TableCell>
                 <TableCell><Button variant="ghost" size="icon" title="查看详情" onClick={() => navigate(`/projects/${project.project_id}`)}><Eye className="w-4 h-4" /></Button></TableCell>
               </TableRow>)}

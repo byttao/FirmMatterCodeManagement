@@ -148,7 +148,7 @@ export default function SetupWizard() {
               <CardDescription>年度是报告编号的归属年度，之后可以在“编号年度配置”中继续添加年度。</CardDescription>
             </CardHeader>
             <CardContent className="max-w-xs space-y-2">
-              <Label htmlFor="fiscal_year">首次操作年度</Label>
+              <Label htmlFor="fiscal_year">首个编号年度</Label>
               <Input id="fiscal_year" type="number" min={2000} max={2100} value={form.fiscal_year} onChange={(e) => setForm({ ...form, fiscal_year: Number(e.target.value) })} required />
             </CardContent>
           </Card>

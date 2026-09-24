@@ -56,10 +56,10 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     }
   }, [isPreview, setDirty])
 
-  // 报告年度选项：1990-2050
+  // 报告年度可以早于编号年度，保留历史项目选项并覆盖未来配置年度。
   const reportYearOptions = useMemo(() => {
     const years: number[] = []
-    for (let y = 1990; y <= 2050; y++) {
+    for (let y = 1990; y <= 2100; y++) {
       years.push(y)
     }
     return years
@@ -100,6 +100,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
 
   const [project, setProject] = useState<Project | null>(null)
+  const numberingYear = project?.fiscal_year ?? fiscalYear
 
   // 团队成员搜索状态
   const [memberSearch, setMemberSearch] = useState('')
@@ -115,7 +116,6 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   useEffect(() => {
     loadAllPractitioners()
-    loadFirms()
     // 编辑或预览模式都需要加载项目数据
     if (isEdit || isPreview) {
       loadProject()
@@ -126,6 +126,10 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
   }, [projectId, user?.id])
 
   useEffect(() => {
+    loadFirms()
+  }, [numberingYear])
+
+  useEffect(() => {
     if (formData.firm) {
       loadSignersByFirm(formData.firm)
       loadReportTypesByFirm(formData.firm)
@@ -133,7 +137,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
       setSigners([])
       setReportTypeOptions([])
     }
-  }, [formData.firm, fiscalYear])
+  }, [formData.firm, numberingYear])
 
   // 点击外部关闭搜索下拉
   useEffect(() => {
@@ -225,8 +229,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   const loadFirms = async () => {
     try {
-      const year = fiscalYear || new Date().getFullYear()
-      const res = await numberedYearOptionsApi.get(year)
+      const res = await numberedYearOptionsApi.get(numberingYear)
       setFirmOptions(Array.isArray(res.data?.firms) ? res.data.firms : [])
     } catch (err) {
       console.error('加载事务所列表失败', err)
@@ -240,8 +243,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
       return
     }
     try {
-      const year = fiscalYear || new Date().getFullYear()
-      const res = await numberedYearOptionsApi.get(year, firm)
+      const res = await numberedYearOptionsApi.get(numberingYear, firm)
       setReportTypeOptions(Array.isArray(res.data?.report_types) ? res.data.report_types : [])
     } catch (err) {
       console.error('加载业务类型失败', err)
@@ -363,8 +365,8 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     }
 
     // 验证业务年度不超过编号年度
-    if (formData.report_year && formData.report_year > fiscalYear) {
-      alert(`业务年度(${formData.report_year}年)不能超过编号年度(${fiscalYear}年)`)
+    if (formData.report_year && formData.report_year > numberingYear) {
+      alert(`业务年度(${formData.report_year}年)不能超过编号年度(${numberingYear}年)`)
       return
     }
 
@@ -466,7 +468,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
               基本信息
             </CardTitle>
             <CardDescription>
-              项目ID、客户名称、事务所、报告类型等基础信息
+              编号年度为 {numberingYear} 年；业务年度记录审计对象所属年度，报告编号按编号年度的规则和序列生成。
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">

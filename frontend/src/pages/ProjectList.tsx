@@ -278,6 +278,7 @@ export default function ProjectList() {
               <TableHead>客户名称</TableHead>
               <TableHead>事务所</TableHead>
               <TableHead>报告类型</TableHead>
+              <TableHead>业务年度</TableHead>
               <TableHead>报告编号</TableHead>
               <TableHead>编号状态</TableHead>
               <TableHead>执业负责人</TableHead>
@@ -289,13 +290,13 @@ export default function ProjectList() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={10} className="text-center py-8">
+                <TableCell colSpan={11} className="text-center py-8">
                   加载中...
                 </TableCell>
               </TableRow>
             ) : projects.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={11} className="text-center py-8 text-muted-foreground">
                   暂无项目
                 </TableCell>
               </TableRow>
@@ -306,6 +307,7 @@ export default function ProjectList() {
                   <TableCell>{project.customer_name}</TableCell>
                   <TableCell>{project.firm}</TableCell>
                   <TableCell>{project.report_type}</TableCell>
+                  <TableCell>{project.report_year} 年</TableCell>
                   <TableCell className="font-mono text-sm">
                     {project.report_no || '-'}
                   </TableCell>

@@ -8,8 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LayoutDashboard, Briefcase, Users, LogOut, Menu, X, Calendar, PenLine, Settings } from 'lucide-react'
 import { useState, useEffect } from 'react'
-
-const APP_VERSION = '0.1.12'
+import { version as APP_VERSION } from '../../package.json'
 
 export default function Layout() {
   const navigate = useNavigate()
@@ -41,7 +40,7 @@ export default function Layout() {
   const handleYearChange = async (newYear: string) => {
     const year = parseInt(newYear)
     // 弹出确认框
-    const confirmed = window.confirm(`确定要切换到 ${year} 年度吗？\n切换后将返回项目列表，并只显示该年度的项目。`)
+    const confirmed = window.confirm(`确定要切换到 ${year} 编号年度吗？\n切换后将返回项目列表，并只显示该编号年度的项目。`)
     if (!confirmed) {
       // 用户取消，保持当前年度
       return
@@ -95,6 +94,7 @@ export default function Layout() {
             {/* 年度切换器 */}
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">编号年度</span>
               <Select value={fiscalYear.toString()} onValueChange={handleYearChange}>
                 <SelectTrigger className="w-[120px] h-8">
                   <SelectValue placeholder="选择年度" />

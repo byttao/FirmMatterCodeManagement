@@ -112,7 +112,7 @@ export default function Login() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="fiscalYear">当前操作年度</Label>
+              <Label htmlFor="fiscalYear">编号年度</Label>
               {initLoading ? (
                 <Input value="加载中..." disabled />
               ) : (
@@ -121,7 +121,7 @@ export default function Login() {
                   onValueChange={(v) => setFiscalYear(parseInt(v))}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="请选择操作年度" />
+                    <SelectValue placeholder="请选择编号年度" />
                   </SelectTrigger>
                   <SelectContent>
                     {availableYears.map((year) => (
