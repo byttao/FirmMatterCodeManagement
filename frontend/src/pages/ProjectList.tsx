@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { projectApi, userApi } from '@/api/auth'
-import { fiscalYearConfigApi } from '@/api/fiscalYearConfig'
+import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { useAuth } from '@/store/AuthContext'
 import type { Project, Practitioner } from '@/types'
 import { getUserDisplayName } from '@/types'
@@ -115,7 +115,7 @@ export default function ProjectList() {
   const loadFirmOptions = async () => {
     try {
       const year = fiscalYear || new Date().getFullYear()
-      const res = await fiscalYearConfigApi.getFirms(year)
+      const res = await numberedYearOptionsApi.get(year)
       setFirmOptions(Array.isArray(res.data?.firms) ? res.data.firms : [])
     } catch (err) {
       console.error('加载事务所列表失败', err)
@@ -125,7 +125,7 @@ export default function ProjectList() {
   const loadReportTypeOptions = async (selectedFirm: string) => {
     try {
       const year = fiscalYear || new Date().getFullYear()
-      const res = await fiscalYearConfigApi.getReportTypes(year, selectedFirm)
+      const res = await numberedYearOptionsApi.get(year, selectedFirm)
       setReportTypeOptions(Array.isArray(res.data?.report_types) ? res.data.report_types : [])
     } catch (err) {
       console.error('加载业务类型失败', err)
@@ -135,11 +135,11 @@ export default function ProjectList() {
   const loadAllReportTypeOptions = async () => {
     try {
       const year = fiscalYear || new Date().getFullYear()
-      const firmsRes = await fiscalYearConfigApi.getFirms(year)
+      const firmsRes = await numberedYearOptionsApi.get(year)
       const firms = Array.isArray(firmsRes.data?.firms) ? firmsRes.data.firms : []
       const allTypes = new Set<string>()
       for (const f of firms) {
-        const res = await fiscalYearConfigApi.getReportTypes(year, f)
+        const res = await numberedYearOptionsApi.get(year, f)
         const types = Array.isArray(res.data?.report_types) ? res.data.report_types : []
         types.forEach(t => allTypes.add(t))
       }

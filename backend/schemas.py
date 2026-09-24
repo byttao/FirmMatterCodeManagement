@@ -220,6 +220,18 @@ class ProjectListResponse(BaseModel):
         orm_mode = True
 
 
+class ReportNumberHistoryResponse(BaseModel):
+    id: int
+    report_no: str
+    is_recycled: bool
+    is_legacy: bool
+    created_at: datetime
+    recycled_at: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True
+
+
 class FinancialEntryCreate(BaseModel):
     amount: condecimal(gt=0, max_digits=12, decimal_places=2)
     occurred_on: date

@@ -1,7 +1,8 @@
 import { useNavigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
-import { userApi, reportYearApi } from '@/api/auth'
+import { userApi } from '@/api/auth'
+import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { ROLE_LABELS, getUserDisplayName } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -19,7 +20,7 @@ export default function Layout() {
     // 获取可选的年度列表（从API获取）
     const fetchAvailableYears = async () => {
       try {
-        const res = await reportYearApi.getAvailableYears()
+        const res = await numberedYearOptionsApi.get()
         setAvailableYears(res.data.years)
         // 如果当前年度不在可选列表中，自动切换到API返回的年度
         if (!res.data.years.includes(fiscalYear)) {
@@ -145,7 +146,7 @@ export default function Layout() {
           </nav>
           {/* 版本信息 */}
           <div className="absolute bottom-4 left-4 text-xs text-muted-foreground">
-            v0.1.5
+            v0.1.6
           </div>
         </aside>
 

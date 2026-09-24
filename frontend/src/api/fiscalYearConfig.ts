@@ -20,35 +20,24 @@ export interface SetupRequest {
 }
 
 // 公开接口（无需认证）
-export const publicFiscalYearApi = {
+export const publicNumberedYearApi = {
   // 获取已配置的年度列表（无需认证）
   getYears: () => {
-    return api.get<{ years: number[] }>('/public/fiscal-years')
+    return api.get<{ years: number[] }>('/public/numbered-years')
   },
 
   getSetupStatus: () => api.get<{ initialized: boolean }>('/setup/status'),
   setup: (data: SetupRequest) => api.post<{ message: string }>('/setup', data),
 }
 
-export const fiscalYearConfigApi = {
-  // 获取已配置的年度列表（从三级结构读取）
-  getYears: () => {
-    return api.get<{ years: number[] }>('/fiscal-years')
-  },
+interface NumberedYearOptions {
+  years: number[]
+  fiscal_year: number
+  firms: string[]
+  report_types: string[]
+}
 
-  // 获取指定年度已配置的事务所列表
-  getFirms: (year: number) => {
-    return api.get<{ firms: string[] }>(
-      '/fiscal-years/firms',
-      { params: { year } }
-    )
-  },
-
-  // 获取指定年度+事务所已配置的业务类型列表
-  getReportTypes: (year: number, firm: string) => {
-    return api.get<{ report_types: string[] }>(
-      '/fiscal-years/report-types',
-      { params: { year, firm } }
-    )
-  },
+export const numberedYearOptionsApi = {
+  get: (year?: number, firm?: string) =>
+    api.get<NumberedYearOptions>('/numbered-years/options', { params: { year, firm } }),
 }

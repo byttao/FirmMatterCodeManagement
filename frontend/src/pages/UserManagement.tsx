@@ -52,9 +52,7 @@ export default function UserManagement() {
   const loadUsers = async () => {
     setLoading(true)
     try {
-      const res = showDeleted
-        ? await userApi.listAll()
-        : await userApi.list()
+      const res = await userApi.list(showDeleted)
       setUsers(res.data)
     } catch (err) {
       console.error('加载用户失败', err)

@@ -50,6 +50,7 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
             os.chdir(backend_dir)
             try:
                 app = importlib.import_module("main").app
+                self.check_upgrade_path()
                 local_transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 12345))
                 async with httpx.AsyncClient(transport=local_transport, base_url="http://testserver") as client:
                     status = await client.get("/api/setup/status")
@@ -95,6 +96,13 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     })
                     self.assertEqual(login.status_code, 200, login.text)
                     auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+                    options = await client.get("/api/numbered-years/options", headers=auth, params={
+                        "year": 2026, "firm": "Example Firm",
+                    })
+                    self.assertEqual(options.status_code, 200, options.text)
+                    self.assertEqual(options.json()["report_types"], ["Audit"])
+                    self.assertEqual((await client.get("/api/report-years", headers=auth)).status_code, 404)
+                    self.assertEqual((await client.get("/api/signers/by-firm/Example Firm", headers=auth)).status_code, 404)
                     years = await client.get("/api/numbered-years", headers=auth)
                     self.assertEqual(years.json()[0]["firms"][0]["rules"][0]["template"], "EX-{yyyy}-{nnn}")
                     configured_year = years.json()[0]
@@ -193,13 +201,75 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     first = await client.post(f"/api/projects/{project_id}/generate-report-no", headers=auth)
                     self.assertEqual(first.status_code, 200, first.text)
                     self.assertEqual(first.json()["report_no"], "EX-2026-001")
+                    self.assertEqual((await client.put(f"/api/numbered-years/rules/{first_rule_id}", headers=auth, json={
+                        "template": "CHANGED-{yyyy}-{nnn}",
+                    })).status_code, 400)
+                    self.assertEqual((await client.put(f"/api/numbered-years/rules/{first_rule_id}", headers=auth, json={
+                        "template": "EX-{yyyy}-{nnn}",
+                    })).status_code, 200)
                     recycled = await client.post(f"/api/projects/{project_id}/recycle-report-no", headers=auth)
                     self.assertEqual(recycled.status_code, 200, recycled.text)
                     self.assertEqual((await client.get(f"/api/projects/{project_id}", headers=auth)).json()["report_no_status"], "recycled")
                     self.assertEqual((await client.post(f"/api/projects/{project_id}/recycle-report-no", headers=auth)).status_code, 400)
+                    main = importlib.import_module("main")
+                    models = importlib.import_module("models")
+                    with main.SessionLocal() as db:
+                        db.query(models.ReportNumberRule).filter_by(id=first_rule_id).one().template = "CHANGED-{yyyy}-{nnn}"
+                        db.query(models.Project).filter_by(project_id=project_id).one().is_deleted = True
+                        db.commit()
+                    try:
+                        reused = await client.post("/api/numbered-years/rules", headers=auth, json={
+                            "fiscal_year_firm_id": first_firm["id"], "rule_name": "Reused Historical Format",
+                            "template": "EX-{yyyy}-{nnn}",
+                        })
+                        self.assertEqual(reused.status_code, 400, reused.text)
+                    finally:
+                        with main.SessionLocal() as db:
+                            db.query(models.ReportNumberRule).filter_by(id=first_rule_id).one().template = "EX-{yyyy}-{nnn}"
+                            db.query(models.Project).filter_by(project_id=project_id).one().is_deleted = False
+                            db.commit()
                     second = await client.post(f"/api/projects/{project_id}/generate-report-no", headers=auth)
                     self.assertEqual(second.status_code, 200, second.text)
                     self.assertEqual(second.json()["report_no"], "EX-2026-002")
+                    history = await client.get(f"/api/projects/{project_id}/report-number-history", headers=auth)
+                    self.assertEqual(history.status_code, 200, history.text)
+                    self.assertEqual(
+                        [(item["report_no"], item["is_recycled"]) for item in history.json()],
+                        [("EX-2026-002", False), ("EX-2026-001", True)],
+                    )
+                    self.assertEqual((await client.get(
+                        f"/api/projects/{project_id}/report-number-history", headers=other_auth
+                    )).status_code, 403)
+
+                    # A recycled number remains reserved even after the project receives a new one.
+                    with main.SessionLocal() as db:
+                        db.query(models.ReportNumberRule).filter_by(id=first_rule_id).one().current_sequence = 0
+                        db.commit()
+                    try:
+                        collision_project = await client.post("/api/projects", headers=auth, json={
+                            "firm": "Example Firm", "report_type": "Audit", "report_year": 2026,
+                            "customer_name": "Collision Check", "leader_id": practitioner.json()["id"],
+                        })
+                        self.assertEqual(collision_project.status_code, 200, collision_project.text)
+                        collision_id = collision_project.json()["project_id"]
+                        from sqlalchemy import text
+                        from sqlalchemy.exc import IntegrityError
+                        with main.SessionLocal() as db:
+                            with self.assertRaises(IntegrityError):
+                                db.execute(text(
+                                    "UPDATE projects SET report_no = :number WHERE project_id = :project_id"
+                                ), {"number": "EX-2026-001", "project_id": collision_id})
+                            db.rollback()
+                        self.assertEqual((await client.post(
+                            f"/api/projects/{collision_id}/generate-report-no", headers=auth
+                        )).status_code, 409)
+                        self.assertEqual((await client.delete(
+                            f"/api/projects/{collision_id}", headers=auth
+                        )).status_code, 200)
+                    finally:
+                        with main.SessionLocal() as db:
+                            db.query(models.ReportNumberRule).filter_by(id=first_rule_id).one().current_sequence = 2
+                            db.commit()
 
                     # Simulate an upgraded database with undated aggregate balances.
                     main = importlib.import_module("main")
@@ -357,7 +427,9 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                         old_project.signer1_id = legacy_id
                         db.commit()
                     self.assertNotIn(legacy_id, [item["id"] for item in (
-                        await client.get("/api/signers/by-firm/Example Firm", headers=auth)
+                        await client.get("/api/signers", headers=auth, params={
+                            "signer_type": "Example Firm", "eligible_only": True,
+                        })
                     ).json()])
                     self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
                         "project_phase": "归档",
@@ -377,6 +449,9 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(linked.status_code, 200, linked.text)
                     self.assertEqual(linked.json()["name"], "旧签字人")
                     self.assertEqual((await client.get(f"/api/projects/{project_id}", headers=third_auth)).status_code, 200)
+                    self.assertEqual((await client.get(
+                        f"/api/projects/{project_id}/report-number-history", headers=third_auth
+                    )).status_code, 200)
                     self.assertEqual((await client.put(f"/api/signers/{legacy_id}", headers=auth, json={
                         "user_id": other_user.json()["id"],
                     })).status_code, 400)
@@ -397,13 +472,17 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(imported.status_code, 200, imported.text)
                     self.assertEqual(imported.json()["message"], "导入完成：新增 1 条，跳过 1 条")
                     self.assertTrue(any(item["user_id"] == fourth.json()["id"] for item in (
-                        await client.get("/api/signers/by-firm/Example Firm", headers=auth)
+                        await client.get("/api/signers", headers=auth, params={
+                            "signer_type": "Example Firm", "eligible_only": True,
+                        })
                     ).json()))
                     self.assertEqual((await client.put(f"/api/users/{third.json()['id']}", headers=auth, json={
                         "role": "admin_staff",
                     })).status_code, 200)
                     self.assertNotIn(legacy_id, [item["id"] for item in (
-                        await client.get("/api/signers/by-firm/Example Firm", headers=auth)
+                        await client.get("/api/signers", headers=auth, params={
+                            "signer_type": "Example Firm", "eligible_only": True,
+                        })
                     ).json()])
                     self.assertEqual((await client.post("/api/projects", headers=auth, json={
                         **new_project, "signer1_id": legacy_id,
@@ -423,6 +502,19 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual((await client.put(f"/api/users/{admin_id}", headers=auth, json={
                         "is_active": False,
                     })).status_code, 400)
+                    with main.SessionLocal() as db:
+                        db.query(models.ReportNumberHistory).filter_by(report_no="EX-2026-002").delete()
+                        db.commit()
+                    from migrations import backfill_report_number_history
+                    with main.engine.begin() as connection:
+                        backfill_report_number_history(connection)
+                    with main.engine.begin() as connection:
+                        backfill_report_number_history(connection)
+                    restored = (await client.get(
+                        f"/api/projects/{project_id}/report-number-history", headers=auth
+                    )).json()
+                    self.assertEqual(len(restored), 2)
+                    self.assertTrue(next(item for item in restored if item["report_no"] == "EX-2026-002")["is_legacy"])
             finally:
                 os.chdir(old_cwd)
                 sys.path.remove(str(backend_dir))
@@ -430,6 +522,63 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     os.environ.pop("FIRM_MANAGER_DATA_DIR", None)
                 else:
                     os.environ["FIRM_MANAGER_DATA_DIR"] = old_data_dir
+
+    def check_upgrade_path(self):
+        from sqlalchemy import create_engine, inspect, text
+        from sqlalchemy.orm import Session
+        import migrations
+        import models
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            db_path = Path(data_dir) / "installed.sqlite"
+            engine = create_engine(f"sqlite:///{db_path}")
+            models.Base.metadata.create_all(engine)
+            with Session(engine) as db:
+                user = models.User(username="old_account", hashed_password="unused",
+                                   real_name="同名执业人", role="practitioner", fiscal_year=2026)
+                db.add(user)
+                db.flush()
+                project = models.Project(
+                    project_id="PRJ-2026-001", firm="Example Firm", report_type="Audit",
+                    report_year=2026, fiscal_year=2026, customer_name="Existing Client",
+                    leader_id=user.id, report_no="EX-2026-001", report_no_status="assigned",
+                    contract_amount=200, invoiced_amount=120.01, received_amount=30.02,
+                )
+                db.add(project)
+                db.commit()
+
+            backup = migrations.upgrade_database(engine)
+            self.assertIsNotNone(backup)
+            self.assertTrue(backup.exists())
+            self.assertIsNone(migrations.upgrade_database(engine))
+            with engine.connect() as connection:
+                self.assertEqual(connection.execute(text("SELECT version FROM schema_migrations ORDER BY version")).all(),
+                                 [(1,), (2,), (3,), (4,)])
+                self.assertEqual(connection.execute(text("SELECT username FROM users")).scalar_one(), "old_account")
+                self.assertEqual(connection.execute(text("SELECT report_no FROM projects")).scalar_one(), "EX-2026-001")
+                self.assertEqual(connection.execute(text("SELECT amount_cents FROM financial_entries ORDER BY kind")).all(),
+                                 [(12001,), (3002,)])
+                self.assertEqual(connection.execute(text("SELECT report_no, is_legacy FROM report_number_history")).one(),
+                                 ("EX-2026-001", 1))
+            with create_engine(f"sqlite:///{backup}").connect() as connection:
+                self.assertNotIn("schema_migrations", inspect(connection).get_table_names())
+                self.assertEqual(connection.execute(text("SELECT report_no FROM projects")).scalar_one(), "EX-2026-001")
+
+            original = migrations.MIGRATIONS
+            def fail_after_writing(connection):
+                connection.execute(text("CREATE TABLE should_rollback (id INTEGER)"))
+                raise RuntimeError("simulated migration failure")
+            migrations.MIGRATIONS = original + ((5, fail_after_writing),)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "数据库升级失败"):
+                    migrations.upgrade_database(engine)
+            finally:
+                migrations.MIGRATIONS = original
+            with engine.connect() as connection:
+                self.assertNotIn("should_rollback", inspect(connection).get_table_names())
+                self.assertEqual(connection.execute(text("SELECT max(version) FROM schema_migrations")).scalar_one(), 4)
+                self.assertEqual(connection.execute(text("SELECT count(*) FROM financial_entries")).scalar_one(), 2)
+            engine.dispose()
 
 
 if __name__ == "__main__":

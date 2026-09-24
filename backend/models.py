@@ -96,6 +96,7 @@ class Project(Base):
     # 关联：团队成员
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
     financial_entries = relationship("FinancialEntry", back_populates="project", cascade="all, delete-orphan")
+    report_number_history = relationship("ReportNumberHistory", back_populates="project")
 
     @property
     def uninvoiced(self):
@@ -146,6 +147,20 @@ class FinanceMigration(Base):
     __tablename__ = "finance_migrations"
 
     project_id = Column(Integer, ForeignKey("projects.id"), primary_key=True)
+
+
+class ReportNumberHistory(Base):
+    __tablename__ = "report_number_history"
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    report_no = Column(String(100), nullable=False, unique=True, index=True)
+    is_recycled = Column(Boolean, nullable=False, default=False)
+    is_legacy = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    recycled_at = Column(DateTime, nullable=True)
+
+    project = relationship("Project", back_populates="report_number_history")
 
 
 class FiscalYear(Base):

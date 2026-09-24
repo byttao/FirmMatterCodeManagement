@@ -2,7 +2,8 @@ import axios from 'axios'
 import type {
   LoginRequest, LoginResponse, User,
   Project, ProjectCreate, ProjectUpdate, ProjectListResponse,
-  DashboardStats, User as UserType, Signer, SignerCreate, FinanceKind, FinancialEntry, FinancialEntryInput
+  DashboardStats, User as UserType, Signer, SignerCreate, FinanceKind, FinancialEntry, FinancialEntryInput,
+  ReportNumberHistory
 } from '@/types'
 
 const api = axios.create({
@@ -39,8 +40,7 @@ export const authApi = {
 
 // 用户管理 API
 export const userApi = {
-  list: () => api.get<UserType[]>('/users'),
-  listAll: () => api.get<UserType[]>('/users/all'),
+  list: (include_disabled = false) => api.get<UserType[]>('/users', { params: { include_disabled } }),
   listPractitioners: () => api.get<{ id: number; username: string; real_name: string; role: string }[]>('/users/practitioners'),
   search: (q: string) => api.get<{ id: number; username: string; real_name: string; role: string }[]>('/users/search', { params: { q } }),
   create: (data: { username: string; password: string; real_name: string; role: string }) =>
@@ -69,6 +69,9 @@ export const projectApi = {
 
   get: (id: string | number) => api.get<Project>(`/projects/${id}`),
 
+  reportHistory: (id: string | number) =>
+    api.get<ReportNumberHistory[]>(`/projects/${id}/report-number-history`),
+
   create: (data: ProjectCreate) => api.post<Project>('/projects', data),
 
   update: (id: string | number, data: ProjectUpdate) => api.put<Project>(`/projects/${id}`, data),
@@ -96,11 +99,6 @@ export const dashboardApi = {
   getStats: (fiscal_year?: number) => api.get<DashboardStats>('/dashboard', { params: { fiscal_year } }),
 }
 
-// 报告年份 API
-export const reportYearApi = {
-  getAvailableYears: () => api.get<{ years: number[]; fiscal_year: number }>('/report-years'),
-}
-
 // Excel 导出
 export const exportApi = {
   exportProjects: (fiscal_year?: number) => api.get('/export/projects', { params: { fiscal_year }, responseType: 'blob' }),
@@ -108,15 +106,9 @@ export const exportApi = {
 
 // 签字人 API
 export const signerApi = {
-  // 获取事务所列表
-  getFirms: () => api.get<{ firms: string[] }>('/signers/firms'),
-
   // 获取签字人列表
-  list: (signer_type?: string, include_disabled?: boolean) =>
-    api.get<Signer[]>('/signers', { params: { signer_type, include_disabled } }),
-
-  getByFirm: (firm: string) =>
-    api.get<Signer[]>(`/signers/by-firm/${firm}`),
+  list: (signer_type?: string, include_disabled?: boolean, eligible_only?: boolean) =>
+    api.get<Signer[]>('/signers', { params: { signer_type, include_disabled, eligible_only } }),
 
   create: (data: SignerCreate) =>
     api.post<Signer>('/signers', data),

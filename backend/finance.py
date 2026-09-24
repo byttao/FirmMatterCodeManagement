@@ -28,15 +28,21 @@ def refresh_project_finance(db: Session, project: models.Project) -> None:
     project.unreceived_amount = (invoice_cents - receipt_cents) / 100
 
 
-def migrate_legacy_finance() -> None:
-    """Import each project's old totals once, including projects with zero balances."""
-    with SessionLocal() as db:
-        if db.get_bind().dialect.name == "sqlite":
-            db.execute(text("BEGIN IMMEDIATE"))
-        projects = db.query(models.Project).filter(
-            ~models.Project.id.in_(db.query(models.FinanceMigration.project_id))
-        ).all()
-        for project in projects:
+def migrate_legacy_finance(db: Session | None = None) -> None:
+    """Import old totals once; the caller owns the transaction when a session is supplied."""
+    if db is None:
+        with SessionLocal() as own_session:
+            if own_session.get_bind().dialect.name == "sqlite":
+                own_session.execute(text("BEGIN IMMEDIATE"))
+            migrate_legacy_finance(own_session)
+            own_session.commit()
+        return
+
+    projects = db.query(models.Project).filter(
+        ~models.Project.id.in_(db.query(models.FinanceMigration.project_id))
+    ).all()
+    for project in projects:
+        if not db.query(models.FinancialEntry.id).filter_by(project_id=project.id).first():
             for kind, amount, old_date in (
                 ("invoice", project.invoiced_amount, project.invoice_date),
                 ("receipt", project.received_amount, project.receive_date),
@@ -48,7 +54,6 @@ def migrate_legacy_finance() -> None:
                         occurred_on=old_date.date() if isinstance(old_date, datetime) else old_date,
                         note="旧版汇总数据", is_legacy=True,
                     ))
-            db.add(models.FinanceMigration(project_id=project.id))
-            db.flush()
-            refresh_project_finance(db, project)
-        db.commit()
+        db.add(models.FinanceMigration(project_id=project.id))
+        db.flush()
+        refresh_project_finance(db, project)

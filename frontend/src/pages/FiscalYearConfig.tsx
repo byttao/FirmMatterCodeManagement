@@ -999,11 +999,18 @@ export default function FiscalYearConfigPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="template">编号规则</Label>
-              <TemplateEditor
-                value={ruleForm.template}
-                onChange={(template) => setRuleForm({ ...ruleFormRef.current, template, sequenceDigits: parseSequenceDigits(template) })}
-                placeholder="输入编号模板，如：{yyyy}-审-{nnn}"
-              />
+              {editingRule && editingRule.current_sequence > 0 ? (
+                <div className="rounded-md border bg-muted px-3 py-3 font-mono text-sm">
+                  {ruleForm.template}
+                  <p className="mt-1 font-sans text-xs text-muted-foreground">已发放编号，模板不可更改</p>
+                </div>
+              ) : (
+                <TemplateEditor
+                  value={ruleForm.template}
+                  onChange={(template) => setRuleForm({ ...ruleFormRef.current, template, sequenceDigits: parseSequenceDigits(template) })}
+                  placeholder="输入编号模板，如：{yyyy}-审-{nnn}"
+                />
+              )}
             </div>
             <div className="space-y-2">
               <Label>编号预览</Label>

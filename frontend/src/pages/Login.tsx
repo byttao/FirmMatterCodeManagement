@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/store/AuthContext'
 import { authApi } from '@/api/auth'
-import { publicFiscalYearApi } from '@/api/fiscalYearConfig'
+import { publicNumberedYearApi } from '@/api/fiscalYearConfig'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -24,12 +24,12 @@ export default function Login() {
   // 首先确认系统已完成安装，再读取可用年度。
   useEffect(() => {
     const currentYear = new Date().getFullYear()
-    publicFiscalYearApi.getSetupStatus().then(statusRes => {
+    publicNumberedYearApi.getSetupStatus().then(statusRes => {
       if (!statusRes.data.initialized) {
         navigate('/setup', { replace: true })
         return null
       }
-      return publicFiscalYearApi.getYears().then(res => {
+      return publicNumberedYearApi.getYears().then(res => {
         const sortedYears = [...(res.data.years || [])].sort((a, b) => b - a)
         setAvailableYears(sortedYears)
         if (!sortedYears.includes(fiscalYear)) {

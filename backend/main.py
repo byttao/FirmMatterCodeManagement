@@ -14,13 +14,13 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Alignment
 
-from database import engine, get_db, Base, SessionLocal
+from database import engine, get_db, SessionLocal
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text, or_
 import models
 import schemas
-from migrations import migrate_signer_accounts
-from finance import migrate_legacy_finance, refresh_project_finance, cents
+from migrations import upgrade_database
+from finance import refresh_project_finance, cents
 from auth import (
     get_password_hash, verify_password, create_access_token,
     get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -33,12 +33,9 @@ from report_no_generator import (
     get_available_report_years, get_available_firms, get_available_report_types, get_rule
 )
 
-# 创建表
-Base.metadata.create_all(bind=engine)
-migrate_signer_accounts(engine)
-migrate_legacy_finance()
+upgrade_database(engine)
 
-app = FastAPI(title="事务所项目编号管理系统", version="0.1.5")
+app = FastAPI(title="事务所项目编号管理系统", version="0.1.6")
 
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]
@@ -76,6 +73,16 @@ def numbering_format_key(template: str, year: int) -> str:
     return re.sub(r"\{n{1,10}\}", "{sequence}", rendered)
 
 
+def numbering_pattern(template: str, year: int):
+    rendered = template.replace("{yyyy}", str(year)).replace("{yy}", str(year)[-2:])
+    sequence = re.search(r"\{n{1,10}\}", rendered)
+    digits = len(sequence.group()) - 2
+    return re.compile(
+        "^" + re.escape(rendered[:sequence.start()]) +
+        rf"[0-9]{{{digits},}}" + re.escape(rendered[sequence.end():]) + "$"
+    )
+
+
 def ensure_unique_numbering_format(db: Session, template: str, year: int, exclude_rule_id: Optional[int] = None):
     candidate = numbering_format_key(template, year)
     rules = db.query(models.ReportNumberRule).join(models.FiscalYearFirm).join(models.FiscalYear).filter(
@@ -83,6 +90,20 @@ def ensure_unique_numbering_format(db: Session, template: str, year: int, exclud
     ).all()
     if any(rule.id != exclude_rule_id and numbering_format_key(rule.template, year) == candidate for rule in rules):
         raise HTTPException(status_code=400, detail="该年度已有相同的编号格式，请使用不同模板或复用已有规则")
+    if exclude_rule_id is not None:
+        previous = db.query(models.ReportNumberRule).filter_by(id=exclude_rule_id).first()
+        if previous and previous.template == template:
+            return
+    pattern = numbering_pattern(template, year)
+    historical_numbers = db.query(models.ReportNumberHistory.report_no).filter(
+        models.ReportNumberHistory.report_no.isnot(None),
+    ).all()
+    historical_numbers += db.query(models.Project.report_no).filter(
+        models.Project.fiscal_year == year,
+        models.Project.report_no.isnot(None),
+    ).all()
+    if any(pattern.fullmatch(number) for (number,) in historical_numbers):
+        raise HTTPException(status_code=400, detail="该编号格式与历史报告编号冲突，不能复用")
 
 
 @app.get("/api/setup/status", response_model=schemas.SetupStatus)
@@ -233,23 +254,16 @@ async def get_me(current_user: models.User = Depends(get_current_user)):
 # ==================== 用户管理 ====================
 @app.get("/api/users", response_model=list[schemas.UserResponse])
 async def list_users(
+    include_disabled: bool = False,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     if not can_manage_users(current_user):
         raise HTTPException(status_code=403, detail="无权限")
-    return db.query(models.User).filter(models.User.is_active == True).all()
-
-
-@app.get("/api/users/all", response_model=list[schemas.UserResponse])
-async def list_all_users(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    """获取所有用户（包括已删除的），用于恢复用户"""
-    if not can_manage_users(current_user):
-        raise HTTPException(status_code=403, detail="无权限")
-    return db.query(models.User).order_by(models.User.is_active.desc(), models.User.id.desc()).all()
+    query = db.query(models.User)
+    if not include_disabled:
+        query = query.filter(models.User.is_active == True)
+    return query.order_by(models.User.is_active.desc(), models.User.id.desc()).all()
 
 
 @app.get("/api/users/practitioners", response_model=list[schemas.PractitionerResponse])
@@ -525,6 +539,7 @@ def append_export_row(sheet, values):
 async def list_signers(
     signer_type: Optional[str] = None,
     include_disabled: bool = False,
+    eligible_only: bool = False,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -532,14 +547,19 @@ async def list_signers(
     - signer_type: 按事务所名称筛选
     - include_disabled: 是否包含已禁用的签字人，默认否
     """
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not eligible_only and current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     query = db.query(models.Signer)
-    if not include_disabled:
+    if not include_disabled or eligible_only:
         query = query.filter(models.Signer.is_active == True)
     if signer_type:
         query = query.filter(models.Signer.signer_type == signer_type)
+    if eligible_only:
+        query = query.filter(
+            models.Signer.user_id.isnot(None),
+            models.Signer.user.has(is_active=True, role=models.UserRole.PRACTITIONER.value),
+        )
     return query.order_by(models.Signer.signer_type, models.Signer.name).all()
 
 
@@ -688,38 +708,6 @@ async def enable_signer(
     signer.disabled_at = None
     db.commit()
     return {"message": "签字人已启用"}
-
-
-@app.get("/api/signers/by-firm/{firm}", response_model=list[schemas.SignerResponse])
-async def get_signers_by_firm(
-    firm: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    """根据事务所名称获取签字人列表（用于项目表单选择）
-    所有已认证用户可用，只返回启用的签字人
-    """
-    return db.query(models.Signer).filter(
-        models.Signer.signer_type == firm,
-        models.Signer.is_active == True,
-        models.Signer.user_id.isnot(None),
-        models.Signer.user.has(models.User.is_active == True, role=models.UserRole.PRACTITIONER.value),
-    ).order_by(models.Signer.name).all()
-
-
-@app.get("/api/signers/firms")
-async def list_signer_firms(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    """获取所有事务所名称（从编号年度配置中获取，去重）"""
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
-        raise HTTPException(status_code=403, detail="无权限管理签字人")
-
-    # 从 fiscal_year_firms 表获取所有事务所名称
-    firms = db.query(models.FiscalYearFirm.firm).distinct().all()
-    return {"firms": [f[0] for f in firms]}
-
 
 
 @app.post("/api/signers/import")
@@ -1041,6 +1029,22 @@ async def get_project(
     return project
 
 
+@app.get("/api/projects/{project_id}/report-number-history", response_model=List[schemas.ReportNumberHistoryResponse])
+async def get_report_number_history(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    project = resolve_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if not can_view_project(current_user, project):
+        raise HTTPException(status_code=403, detail="无权限查看此项目")
+    return db.query(models.ReportNumberHistory).filter_by(project_id=project.id).order_by(
+        models.ReportNumberHistory.id.desc()
+    ).all()
+
+
 @app.post("/api/projects", response_model=schemas.ProjectResponse)
 async def create_project(
     project_data: schemas.ProjectCreate,
@@ -1342,17 +1346,18 @@ async def generate_report_number(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # 检查编号是否重复
-    existing = db.query(models.Project).filter(
-        models.Project.report_no == report_no,
-        models.Project.is_deleted == False
-    ).first()
+    # 已删除或已回收项目的编号也保留，不能再次发放。
+    existing = db.query(models.ReportNumberHistory.id).filter_by(report_no=report_no).first()
+    if not existing:
+        existing = db.query(models.Project.id).filter_by(report_no=report_no).first()
     if existing:
         db.rollback()
-        raise HTTPException(status_code=500, detail="编号重复，请重试")
+        raise HTTPException(status_code=409, detail="编号与历史项目冲突，请检查编号规则")
 
     project.report_no = report_no
     project.report_no_status = models.ReportStatus.ASSIGNED.value
+    if db.get_bind().dialect.name != "sqlite":
+        db.add(models.ReportNumberHistory(project_id=project.id, report_no=report_no))
     db.commit()
     db.refresh(project)
 
@@ -1383,53 +1388,6 @@ async def recycle_report_number(
     db.refresh(project)
 
     return {"message": "编号已回收"}
-
-
-@app.get("/api/report-years")
-async def get_report_years(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    """获取可选的报告年份（从编号年度配置读取已配置的年份）"""
-    years = get_available_report_years(db)
-
-    # 如果没有数据，返回当前年
-    if not years:
-        current_year = datetime.now().year
-        years = [current_year]
-
-    # 获取当前操作年度
-    fiscal_year = current_user.fiscal_year or datetime.now().year
-
-    # 如果当前操作年度不在列表中，添加到列表
-    if fiscal_year not in years:
-        years.append(fiscal_year)
-        years = sorted(years, reverse=True)
-
-    return {"years": years, "fiscal_year": fiscal_year}
-
-
-@app.get("/api/fiscal-years/firms")
-async def get_fiscal_year_firms(
-    year: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    """获取指定年度已配置的事务所列表"""
-    firms = get_available_firms(db, year)
-    return {"firms": firms}
-
-
-@app.get("/api/fiscal-years/report-types")
-async def get_fiscal_year_report_types(
-    year: int,
-    firm: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    """获取指定年度+事务所下已配置的业务类型列表"""
-    report_types = get_available_report_types(db, firm, year)
-    return {"report_types": report_types}
 
 
 # ==================== 看板统计 ====================
@@ -1495,34 +1453,36 @@ async def get_dashboard(
     )
 
 
+@app.get("/api/public/numbered-years")
+async def public_list_numbered_years(db: Session = Depends(get_db)):
+    years = db.query(models.FiscalYear.year).order_by(
+        models.FiscalYear.year.desc()
+    ).all()
+    return {"years": [y[0] for y in years]}
+
+
 # ==================== 编号年度配置管理 ====================
 
-
-
-@app.get("/api/fiscal-years")
-async def list_fiscal_years(
+@app.get("/api/numbered-years/options")
+async def numbered_year_options(
+    year: Optional[int] = None,
+    firm: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
-    """获取所有已配置的编号年度（从三级结构读取）"""
-    years = db.query(models.FiscalYear.year).order_by(
-        models.FiscalYear.year.desc()
-    ).all()
-    return {"years": [y[0] for y in years]}
-
-
-# ==================== 公开接口（无需认证） ====================
-
-@app.get("/api/public/fiscal-years")
-async def public_list_fiscal_years(db: Session = Depends(get_db)):
-    """公开接口：获取所有已配置的编号年度（无需认证）"""
-    years = db.query(models.FiscalYear.year).order_by(
-        models.FiscalYear.year.desc()
-    ).all()
-    return {"years": [y[0] for y in years]}
-
-
-# ==================== 新版编号年度配置管理（三级结构） ====================
+    years = get_available_report_years(db)
+    if year is None:
+        firms = [name for (name,) in db.query(models.FiscalYearFirm.firm).distinct().order_by(
+            models.FiscalYearFirm.firm
+        ).all()]
+    else:
+        firms = get_available_firms(db, year)
+    return {
+        "years": years,
+        "fiscal_year": current_user.fiscal_year,
+        "firms": firms,
+        "report_types": get_available_report_types(db, firm, year) if firm and year else [],
+    }
 
 @app.get("/api/numbered-years")
 async def list_numbered_years(
@@ -1764,6 +1724,8 @@ async def update_report_number_rule(
         sequence_digits = validate_setup_template(changes.get('template', rule.template))
         if 'sequence_digits' in changes and changes['sequence_digits'] != sequence_digits:
             raise HTTPException(status_code=400, detail="编号位数必须与模板序号占位符一致")
+        if rule.current_sequence and changes.get('template', rule.template) != rule.template:
+            raise HTTPException(status_code=400, detail="该规则已有编号，不能修改模板")
         changes['sequence_digits'] = sequence_digits
         ensure_unique_numbering_format(
             db, changes.get('template', rule.template), rule.fiscal_year_firm.fiscal_year.year, rule.id
@@ -2009,6 +1971,8 @@ app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="as
 @app.get("/{path:path}", include_in_schema=False)
 async def serve_spa(path: str):
     """Catch-all route for Single Page Application routing"""
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API 不存在")
     index_path = STATIC_DIR / "index.html"
     if not index_path.exists():
         raise HTTPException(status_code=503, detail="前端尚未构建，请先运行 frontend 的 npm run build 并部署 dist 内容")

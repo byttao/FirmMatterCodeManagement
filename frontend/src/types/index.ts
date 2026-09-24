@@ -168,6 +168,15 @@ export interface ProjectListResponse {
   page_size: number
 }
 
+export interface ReportNumberHistory {
+  id: number
+  report_no: string
+  is_recycled: boolean
+  is_legacy: boolean
+  created_at: string
+  recycled_at: string | null
+}
+
 // 看板统计
 export interface DashboardStats {
   total_projects: number

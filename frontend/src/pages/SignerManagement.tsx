@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { signerApi, userApi } from '@/api/auth'
+import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { useAuth } from '@/store/AuthContext'
 import { Navigate } from 'react-router-dom'
 import type { Signer, SignerCreate, Practitioner } from '@/types'
@@ -58,7 +59,7 @@ export default function SignerManagement() {
 
   const loadFirms = async () => {
     try {
-      const res = await signerApi.getFirms()
+      const res = await numberedYearOptionsApi.get()
       setFirms(res.data.firms || [])
     } catch (err) {
       console.error('加载事务所失败', err)

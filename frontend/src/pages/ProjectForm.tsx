@@ -1,10 +1,10 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { projectApi, userApi, signerApi } from '@/api/auth'
-import { fiscalYearConfigApi } from '@/api/fiscalYearConfig'
+import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
-import type { Project, ProjectCreate, ProjectUpdate, Signer } from '@/types'
+import type { Project, ProjectCreate, ProjectUpdate, ReportNumberHistory, Signer } from '@/types'
 import { getSignerDisplayName, getUserDisplayName } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,7 +34,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
   const { projectId } = useParams()
   const navigate = useNavigate()
   const { user, fiscalYear } = useAuth()
-  const { setDirty, confirmDirty } = useDirty()
+  const { isDirty, setDirty, confirmDirty } = useDirty()
   const isPreview = readonly
   const isEdit = !!projectId && projectId !== 'new' && !isPreview
 
@@ -43,6 +43,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
   const [generatingNo, setGeneratingNo] = useState(false)
   const [allPractitioners, setAllPractitioners] = useState<Practitioner[]>([])
   const [signers, setSigners] = useState<Signer[]>([])
+  const [reportHistory, setReportHistory] = useState<ReportNumberHistory[]>([])
 
   // 动态事务所和业务类型列表
   const [firmOptions, setFirmOptions] = useState<string[]>([])
@@ -225,7 +226,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
   const loadFirms = async () => {
     try {
       const year = fiscalYear || new Date().getFullYear()
-      const res = await fiscalYearConfigApi.getFirms(year)
+      const res = await numberedYearOptionsApi.get(year)
       setFirmOptions(Array.isArray(res.data?.firms) ? res.data.firms : [])
     } catch (err) {
       console.error('加载事务所列表失败', err)
@@ -240,7 +241,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     }
     try {
       const year = fiscalYear || new Date().getFullYear()
-      const res = await fiscalYearConfigApi.getReportTypes(year, firm)
+      const res = await numberedYearOptionsApi.get(year, firm)
       setReportTypeOptions(Array.isArray(res.data?.report_types) ? res.data.report_types : [])
     } catch (err) {
       console.error('加载业务类型失败', err)
@@ -250,7 +251,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   const loadSignersByFirm = async (firm: string) => {
     try {
-      const res = await signerApi.getByFirm(firm)
+      const res = await signerApi.list(firm, false, true)
       if (Array.isArray(res.data)) {
         setSigners(res.data.filter(s => s && typeof s.id === 'number'))
       } else {
@@ -264,9 +265,12 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   const loadProject = async () => {
     try {
-      const res = await projectApi.get(projectId!)
+      const [res, history] = await Promise.all([
+        projectApi.get(projectId!), projectApi.reportHistory(projectId!),
+      ])
       const p = res.data
       setProject(p)
+      setReportHistory(history.data)
       setFormData({
         firm: p.firm,
         report_type: p.report_type,
@@ -402,10 +406,17 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   const handleGenerateReportNo = async () => {
     if (!project) return
+    if (isDirty) {
+      alert('请先保存项目修改，再生成报告编号')
+      return
+    }
     setGeneratingNo(true)
     try {
       const res = await projectApi.generateReportNo(project.id)
       setProject(prev => prev ? { ...prev, report_no: res.data.report_no, report_no_status: 'assigned' } : null)
+      projectApi.reportHistory(project.id).then(history => setReportHistory(history.data)).catch(err => {
+        console.error('刷新编号记录失败', err)
+      })
       alert('报告编号生成成功：' + res.data.report_no)
     } catch (err: any) {
       alert(err.response?.data?.detail || '生成编号失败')
@@ -842,7 +853,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
                       )}
                     </div>
                   </div>
-                  {!isPreview && canGenerateNo && formData.firm && formData.report_type && formData.customer_name && (
+                  {!isFieldDisabled && canGenerateNo && formData.firm && formData.report_type && formData.customer_name && (
                     <Button
                       type="button"
                       onClick={handleGenerateReportNo}
@@ -859,6 +870,22 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
                     </Button>
                   )}
                 </div>
+                {reportHistory.length > 0 && (
+                  <div className="mt-4 border-t pt-3">
+                    <Label className="text-sm">编号记录</Label>
+                    <ul className="mt-2 space-y-1 text-sm">
+                      {reportHistory.map(record => (
+                        <li key={record.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span className="font-mono">{record.report_no}</span>
+                          <span className="text-muted-foreground">
+                            {record.is_recycled ? '已回收' : '当前使用'}
+                            {record.is_legacy ? ' · 升级补录' : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>

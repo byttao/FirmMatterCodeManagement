@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Building2, CheckCircle2, Plus, ShieldCheck, Trash2 } from 'lucide-react'
-import { publicFiscalYearApi, type SetupFirm, type SetupRequest } from '@/api/fiscalYearConfig'
+import { publicNumberedYearApi, type SetupFirm, type SetupRequest } from '@/api/fiscalYearConfig'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -31,7 +31,7 @@ export default function SetupWizard() {
   const [checking, setChecking] = useState(true)
 
   useEffect(() => {
-    publicFiscalYearApi.getSetupStatus().then((res) => {
+    publicNumberedYearApi.getSetupStatus().then((res) => {
       if (res.data.initialized) navigate('/login', { replace: true })
     }).catch(() => setError('无法连接服务器，请确认后端服务已启动'))
       .finally(() => setChecking(false))
@@ -88,7 +88,7 @@ export default function SetupWizard() {
 
     setSaving(true)
     try {
-      await publicFiscalYearApi.setup(form)
+      await publicNumberedYearApi.setup(form)
       navigate('/login', { replace: true, state: { setupComplete: true } })
     } catch (err: any) {
       setError(err.response?.data?.detail || '初始化失败，请检查填写内容后重试')

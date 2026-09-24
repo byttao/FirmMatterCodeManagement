@@ -11,6 +11,7 @@
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import update
+from datetime import datetime
 import re
 import models
 
@@ -82,6 +83,15 @@ def recycle_report_no(db: Session, project: "models.Project") -> None:
     """回收编号时保留原编号以供查阅，序列保持单调递增。"""
     if not project or not project.report_no:
         return
+    history = db.query(models.ReportNumberHistory).filter_by(report_no=project.report_no).first()
+    if history is None:
+        history = models.ReportNumberHistory(
+            project_id=project.id, report_no=project.report_no, is_legacy=True,
+        )
+        db.add(history)
+    history.is_recycled = True
+    if history.recycled_at is None:
+        history.recycled_at = datetime.now()
     project.report_no_status = models.ReportStatus.RECYCLED.value
 
 
