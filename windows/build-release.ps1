@@ -28,7 +28,11 @@ $smokeData = Join-Path $projectRoot "dist\data"
 New-Item -ItemType Directory -Force $smokeData | Out-Null
 $smokeConfig = '{"bind_host":"127.0.0.1","port":18741,"public_host":""}'
 [System.IO.File]::WriteAllText((Join-Path $smokeData "server.json"), $smokeConfig, [System.Text.UTF8Encoding]::new($false))
-$server = Start-Process -FilePath (Join-Path $projectRoot "dist\BackendServer.exe") -WorkingDirectory (Join-Path $projectRoot "dist") -PassThru
+$serverStdout = Join-Path $buildDir "backend-stdout.log"
+$serverStderr = Join-Path $buildDir "backend-stderr.log"
+$server = Start-Process -FilePath (Join-Path $projectRoot "dist\BackendServer.exe") `
+  -WorkingDirectory (Join-Path $projectRoot "dist") `
+  -RedirectStandardOutput $serverStdout -RedirectStandardError $serverStderr -PassThru
 try {
   $ready = $false
   for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -44,7 +48,12 @@ try {
     } catch { }
     if ($server.HasExited) { break }
   }
-  if (-not $ready) { throw "BackendServer.exe 启动或前端静态文件检查失败" }
+  if (-not $ready) {
+    Write-Host "BackendServer.exe exit code: $($server.ExitCode)"
+    if (Test-Path $serverStdout) { Get-Content $serverStdout -Tail 80 }
+    if (Test-Path $serverStderr) { Get-Content $serverStderr -Tail 80 }
+    throw "BackendServer.exe 启动或前端静态文件检查失败"
+  }
 } finally {
   if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
 }
