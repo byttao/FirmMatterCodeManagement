@@ -51,7 +51,7 @@ export function FinancialLedger({ project, canEdit, onProjectChange }: Props) {
   const openEditor = (kind: FinanceKind, entry: FinancialEntry | null = null) => {
     setForm({
       amount: entry?.amount ?? 0,
-      occurred_on: entry?.occurred_on ?? format(new Date(), 'yyyy-MM-dd'),
+      occurred_on: entry ? entry.occurred_on : format(new Date(), 'yyyy-MM-dd'),
       reference: entry?.reference ?? '',
       note: entry?.note ?? '',
     })

@@ -964,7 +964,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
         )}
 
         {/* 提交按钮 - 预览模式隐藏 */}
-        {!isPreview && (
+        {!isPreview && isBasicFieldEditable && (
           <div className="flex justify-end gap-4">
             <Button type="button" variant="outline" onClick={() => { setDirty(false); navigate('/projects') }}>
               取消

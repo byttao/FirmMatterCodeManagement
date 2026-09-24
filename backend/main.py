@@ -36,7 +36,7 @@ from report_no_generator import (
 Base.metadata.create_all(bind=engine)
 migrate_legacy_finance()
 
-app = FastAPI(title="事务所项目编号管理系统", version="0.1.1")
+app = FastAPI(title="事务所项目编号管理系统", version="0.1.2")
 
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]
