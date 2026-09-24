@@ -29,6 +29,14 @@
 
 ## 快速启动
 
+### Windows 服务器一键部署
+
+从 [GitHub Release](https://github.com/byttao/FirmMatterCodeManagement/releases) 下载 `FirmMatterCodeManagement-win-x64.zip`，解压到固定目录，双击 `Manager.exe` 并授予管理员权限。设置监听范围、端口及可选的外部 IP 或域名后，点击“一键启动”。管理工具会安装开机自启的 Windows 服务、配置入站防火墙，并打开本机首次启用页面。完整步骤见 ZIP 内的 `安装与初始化.html`。
+
+安装包中的两个 EXE 已包含 Python 运行时；正式使用无需安装 Python 或 Node.js。`prerequisites` 目录提供可选的 Python 安装包，供服务器上维护源码使用。域名需自行配置 DNS；公网访问业务数据时需另行配置 HTTPS 反向代理。
+
+Windows 版在管理工具中检查 GitHub 新版本，可自动下载并升级；也可先下载最新 ZIP，再在管理工具中选择该文件离线升级。升级会停止服务、备份 SQLite 数据库、替换程序并验证新服务，失败时尝试恢复原程序和数据库。业务数据、密钥及服务器配置保存在解压目录的 `data` 中，迁移服务器时须一并保留。未创建数据库的首次安装目录可直接升级，无需备份空库。
+
 ### 开发模式
 
 ```bash

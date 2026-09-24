@@ -1952,7 +1952,7 @@ async def export_projects(
 
 # ==================== 前端静态文件服务 ====================
 # 构建产物可缺席；开发模式下 API 与 Vite 分别运行。
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_DIR = Path(os.getenv("FIRM_MANAGER_STATIC_DIR", Path(__file__).resolve().parent / "static"))
 (STATIC_DIR / "assets").mkdir(parents=True, exist_ok=True)
 
 # favicon.ico 专门处理（必须在 catch-all 之前）

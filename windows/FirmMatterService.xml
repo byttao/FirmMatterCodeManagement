@@ -1,0 +1,11 @@
+<service>
+  <id>FirmMatterCodeManagement</id>
+  <name>事务所业务编号管理系统</name>
+  <description>事务所项目、业务编号、签字及财务登记服务</description>
+  <executable>%BASE%\BackendServer.exe</executable>
+  <workingdirectory>%BASE%</workingdirectory>
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="10 sec" />
+  <logpath>%BASE%\data\logs</logpath>
+  <log mode="roll" />
+</service>

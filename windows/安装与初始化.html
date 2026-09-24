@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>安装与初始化 | 事务所业务编号管理系统</title>
+  <style>
+    :root { color-scheme: light; font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif; color: #172627; background: #f6f8f8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; line-height: 1.7; letter-spacing: 0; }
+    header { background: #173e3c; color: #fff; padding: 36px 24px 32px; }
+    .wrap { width: min(100% - 40px, 960px); margin: 0 auto; }
+    header p { margin: 0 0 6px; color: #b9dbd2; font-size: 14px; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.35; }
+    h2 { margin: 0 0 14px; font-size: 20px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    main { padding: 28px 0 56px; }
+    section { padding: 24px 0; border-bottom: 1px solid #d9e2e0; }
+    p { margin: 8px 0; }
+    ol, ul { margin: 10px 0; padding-left: 23px; }
+    li { padding: 3px 0; }
+    .intro { font-size: 16px; color: #34494a; }
+    .steps { display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .step { background: #fff; border: 1px solid #d9e2e0; border-radius: 6px; padding: 18px; }
+    .number { display: inline-flex; width: 28px; height: 28px; align-items: center; justify-content: center; background: #1d7168; color: #fff; border-radius: 50%; font-weight: 700; margin-bottom: 12px; }
+    .note { border-left: 4px solid #bc7f2d; background: #fff8e8; padding: 12px 16px; margin: 16px 0; }
+    code { font-family: Consolas, monospace; background: #e7edec; border-radius: 3px; padding: 2px 5px; overflow-wrap: anywhere; }
+    table { width: 100%; border-collapse: collapse; background: #fff; }
+    th, td { border: 1px solid #d9e2e0; padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: #ebf2f0; width: 190px; }
+    a { color: #075f65; }
+    footer { color: #617273; font-size: 13px; padding: 24px 0; }
+    @media (max-width: 700px) { .steps { grid-template-columns: 1fr; } h1 { font-size: 23px; } th { width: 120px; } .wrap { width: min(100% - 28px, 960px); } }
+  </style>
+</head>
+<body>
+  <header><div class="wrap"><p>Windows / Windows Server 部署手册</p><h1>事务所业务编号管理系统<br>安装与初始化</h1></div></header>
+  <main class="wrap">
+    <p class="intro">下载 Windows 发布包，解压到固定目录，运行 <code>Manager.exe</code> 即可安装和启动后台服务。发布包自带 Python 运行环境，正式运行无需另装 Python 或 Node.js。</p>
+
+    <section>
+      <h2>安装</h2>
+      <div class="steps">
+        <div class="step"><span class="number">1</span><h3>解压完整安装包</h3><p>将 ZIP 解压到固定位置，例如 <code>C:\FirmMatterCodeManagement</code>。请保留全部文件，不要只复制 EXE。</p></div>
+        <div class="step"><span class="number">2</span><h3>打开管理工具</h3><p>双击 <code>Manager.exe</code>，接受 Windows 管理员权限提示。管理工具会安装开机自启的系统服务。</p></div>
+        <div class="step"><span class="number">3</span><h3>一键启动</h3><p>选择监听范围和端口，填写可选的外部 IP 或域名，点击“一键启动”。工具会配置入站防火墙并打开本机页面。</p></div>
+      </div>
+      <div class="note">首次启用必须在服务器本机完成。通过远程桌面登录服务器后，让管理工具打开 <code>127.0.0.1:端口/setup</code>。安装完成后其他电脑才能按权限登录。</div>
+    </section>
+
+    <section>
+      <h2>首次启用</h2>
+      <ol>
+        <li>创建管理员账号并设置至少 8 位密码。</li>
+        <li>选择首个编号年度，填写事务所名称。</li>
+        <li>为各事务所填写业务类型和编号模板。模板必须含 <code>{yyyy}</code> 与一个序号占位符，如 <code>{nnn}</code>；示例 <code>{yyyy}-{nnn}</code>。</li>
+        <li>完成后登录，在“用户管理”建立执业人员账号，再在“签字人管理”按账号关联签字人。同名人员以账号区分。</li>
+      </ol>
+      <p>系统不会预置事务所名称、文号、管理员账号或业务数据。</p>
+    </section>
+
+    <section>
+      <h2>访问地址</h2>
+      <table>
+        <tr><th>监听范围</th><td><code>127.0.0.1</code> 只供服务器本机访问；<code>0.0.0.0</code> 允许通过服务器 IP 或已解析域名访问。</td></tr>
+        <tr><th>端口</th><td>默认 <code>8000</code>。管理工具会为所选端口设置 Windows 入站防火墙规则。</td></tr>
+        <tr><th>外部 IP 或域名</th><td>填写服务器 IP 或域名，不含 <code>http://</code> 和端口。域名须提前配置 DNS；跨公网还需配置云安全组或路由器端口转发。</td></tr>
+        <tr><th>HTTPS</th><td>管理工具提供 HTTP 服务。通过公网处理业务数据时，请在服务前配置 HTTPS 反向代理，并避免直接暴露 HTTP 登录页面。</td></tr>
+      </table>
+      <p>管理工具中的“检测外部地址”从服务器本机发起请求；其他网络的可达性仍需从对应客户端确认。</p>
+    </section>
+
+    <section>
+      <h2>更新与备份</h2>
+      <ul>
+        <li>联网升级：在管理工具中点击“检查更新”，发现新版本后点击“安装新版”。</li>
+        <li>离线升级：下载最新的 <code>FirmMatterCodeManagement-win-x64.zip</code>，在管理工具中点击“选择本地 ZIP 升级”。</li>
+        <li>升级时工具会停服务、备份 <code>data\db.sqlite</code>、替换程序并重启验证。失败时尝试恢复原程序和数据库。</li>
+        <li><code>data</code> 保存数据库、登录密钥、服务器配置和升级备份。迁移或重装时必须连同该目录保留。</li>
+      </ul>
+      <div class="note">不要在运行服务时直接覆盖安装目录。若升级被断电或系统强制终止，请停止服务后从 <code>data</code> 中的升级前备份恢复，并使用对应版本的安装包排查。</div>
+    </section>
+
+    <section>
+      <h2>前置环境</h2>
+      <p>发布包无需额外安装 Python、Node.js 或 Rust。<a href="prerequisites/README.txt">prerequisites 目录</a>存放可选的源码维护安装包和说明；正式部署不需要使用其中的 Python 安装包。</p>
+      <p>支持 64 位 Windows 10/11 和带桌面体验的 Windows Server。无桌面体验的 Server Core 无法打开管理界面，可使用系统服务命令管理已安装的服务。</p>
+    </section>
+    <footer>FirmMatterCodeManagement · 请始终从项目 GitHub Release 获取新版安装包。</footer>
+  </main>
+</body>
+</html>
