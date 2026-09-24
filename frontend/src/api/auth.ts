@@ -62,7 +62,7 @@ export const projectApi = {
     report_type?: string
     project_status?: string
     leader_id?: number
-    year?: number
+    report_year?: number
   }) => api.get<ProjectListResponse>('/projects', { params }),
 
   signedByMe: (page = 1) => api.get<ProjectListResponse>('/projects/signed-by-me', { params: { page } }),

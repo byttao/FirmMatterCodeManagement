@@ -219,6 +219,17 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(audit_project_ids, ["PRJ-2026-0001", "PRJ-2026-0002"])
                     visible_projects = (await client.get("/api/projects", headers=auth)).json()["items"]
                     self.assertTrue(set(audit_project_ids).issubset({item["project_id"] for item in visible_projects}))
+                    business_year_projects = (await client.get(
+                        "/api/projects", headers=auth, params={"report_year": 2024}
+                    )).json()["items"]
+                    self.assertEqual(
+                        [item["project_id"] for item in business_year_projects if item["project_id"] in audit_project_ids],
+                        [audit_project_ids[0]],
+                    )
+                    self.assertEqual(
+                        (await client.get("/api/projects", headers=auth, params={"year": 2024})).status_code,
+                        400,
+                    )
                     self.assertEqual((await client.post("/api/projects", headers=auth, json={
                         "firm": "Example Firm", "report_type": "Audit", "report_year": 2026,
                         "customer_name": "Manual Number", "leader_id": practitioner.json()["id"],

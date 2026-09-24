@@ -951,10 +951,14 @@ async def list_projects(
     report_type: Optional[str] = None,
     project_status: Optional[str] = None,
     leader_id: Optional[int] = None,
-    year: Optional[int] = None,
+    report_year: Optional[int] = Query(None, description="按业务年度筛选；不提供时按当前编号年度筛选"),
+    year: Optional[int] = Query(None, include_in_schema=False),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    if year is not None:
+        raise HTTPException(status_code=400, detail="year 参数已移除，请改用 report_year（业务年度）")
+
     query = db.query(models.Project).filter(models.Project.is_deleted == False)
 
     # 执业人员只能看自己参与的项目
@@ -983,9 +987,9 @@ async def list_projects(
         query = query.filter(models.Project.project_status == project_status)
     if leader_id:
         query = query.filter(models.Project.leader_id == leader_id)
-    if year:
-        # 指定年份时，按报告编号年份过滤
-        query = query.filter(models.Project.report_year == year)
+    if report_year is not None:
+        # 显式传入业务年度时，仅筛选审计对象所属年度。
+        query = query.filter(models.Project.report_year == report_year)
     else:
         # 默认按当前用户的操作年度过滤
         query = query.filter(models.Project.fiscal_year == current_user.fiscal_year)
