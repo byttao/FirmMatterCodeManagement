@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LayoutDashboard, Briefcase, Users, LogOut, Menu, X, Calendar, PenLine, Settings } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
+const APP_VERSION = '0.1.8'
+
 export default function Layout() {
   const navigate = useNavigate()
   const { user, logout, fiscalYear, setFiscalYear } = useAuth()
@@ -146,7 +148,7 @@ export default function Layout() {
           </nav>
           {/* 版本信息 */}
           <div className="absolute bottom-4 left-4 text-xs text-muted-foreground">
-            v0.1.6
+            v{APP_VERSION}
           </div>
         </aside>
 

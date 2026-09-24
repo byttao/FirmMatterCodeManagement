@@ -32,10 +32,11 @@ from report_no_generator import (
     generate_report_no, recycle_report_no,
     get_available_report_years, get_available_firms, get_available_report_types, get_rule
 )
+from version import APP_VERSION
 
 upgrade_database(engine)
 
-app = FastAPI(title="事务所项目编号管理系统", version="0.1.7")
+app = FastAPI(title="事务所项目编号管理系统", version=APP_VERSION)
 
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]

@@ -81,8 +81,20 @@ python main.py
 
 ### 已部署系统升级
 
+升级分为程序文件和数据库两部分。数据库迁移是自动的；程序文件可用仓库根目录的 `upgrade.py` 一条命令完成下载、校验包结构和替换。脚本不覆盖业务数据、JWT 密钥、环境变量或已构建的静态目录。
+
+```bash
+python upgrade.py                 # 只检查 GitHub 最新 Release
+python upgrade.py --apply         # 停止后端后备份数据库并更新程序文件
+python upgrade.py --target 0.1.8 --apply
+```
+
+脚本需要能访问 GitHub，且应在后端停止后运行。更新完成后启动后端，数据库会按 `schema_migrations` 自动迁移；迁移失败会回滚并阻止服务启动。脚本不会猜测 Windows 服务、Docker 或其他进程管理器的重启命令，部署到这些环境时把 `upgrade.py --apply` 接入现有发布流程即可实现自动下载、备份、更新和重启。
+
+使用前后端分开部署时，升级后刷新前端即可。使用单体模式时，`backend/static` 为部署机上的构建目录，不会被源码升级覆盖；请在有 Node.js 的环境运行 `cd frontend && npm ci && npm run build`，再把 `frontend/dist` 内容复制到 `backend/static`。
+
 1. 停止正在运行的后端，并保留整个数据目录（数据库及 `jwt_secret`）。不要把数据目录覆盖为新版本中的文件。
-2. 获取新版本源码或发布包，安装新版本依赖；若使用单体模式，重新构建前端并部署到 `backend/static`。
+2. 运行 `python upgrade.py --apply`，或获取新版本源码/发布包后安装依赖；若使用单体模式，重新构建前端并部署到 `backend/static`。
 3. 启动新版本后端。启动时按 `schema_migrations` 中的版本记录自动执行尚未运行的数据库迁移；旧库首次升级时会在数据库旁自动生成 `*-before-upgrade-时间.sqlite` 备份，后续无迁移的启动不会重复备份或重复导入数据。
 4. 确认启动成功、能够登录，并抽查项目数量、编号历史及财务流水。自动备份包含业务数据，应与数据库一样妥善保管。
 
