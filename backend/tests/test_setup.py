@@ -1,6 +1,7 @@
 """Integration checks against a fresh, isolated database."""
 
 import importlib
+import asyncio
 import os
 from pathlib import Path
 import sys
@@ -91,6 +92,94 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     second = await client.post(f"/api/projects/{project_id}/generate-report-no", headers=auth)
                     self.assertEqual(second.status_code, 200, second.text)
                     self.assertEqual(second.json()["report_no"], "EX-2026-002")
+
+                    # Simulate an upgraded database with undated aggregate balances.
+                    main = importlib.import_module("main")
+                    models = importlib.import_module("models")
+                    finance = importlib.import_module("finance")
+                    with main.SessionLocal() as db:
+                        stored = db.query(models.Project).filter_by(project_id=project_id).one()
+                        stored.invoiced_amount = 100.02
+                        stored.received_amount = 30.01
+                        db.query(models.FinanceMigration).filter_by(project_id=stored.id).delete()
+                        db.commit()
+                    finance.migrate_legacy_finance()
+                    finance.migrate_legacy_finance()
+                    invoices_url = f"/api/projects/{project_id}/finance/invoices"
+                    receipts_url = f"/api/projects/{project_id}/finance/receipts"
+                    legacy_invoice = (await client.get(invoices_url, headers=auth)).json()
+                    self.assertEqual(len(legacy_invoice), 1)
+                    self.assertTrue(legacy_invoice[0]["is_legacy"])
+                    self.assertIsNone(legacy_invoice[0]["occurred_on"])
+                    self.assertEqual(legacy_invoice[0]["amount"], 100.02)
+                    self.assertEqual(len((await client.get(receipts_url, headers=auth)).json()), 1)
+
+                    self.assertEqual((await client.post(invoices_url, headers=auth, json={
+                        "amount": 0, "occurred_on": "2026-09-24",
+                    })).status_code, 422)
+                    invoice = await client.post(invoices_url, headers=auth, json={
+                        "amount": 49.98, "occurred_on": "2026-09-24", "reference": "INV-01",
+                    })
+                    self.assertEqual(invoice.status_code, 200, invoice.text)
+                    receipt = await client.post(receipts_url, headers=auth, json={
+                        "amount": 20, "occurred_on": "2026-09-25",
+                    })
+                    self.assertEqual(receipt.status_code, 200, receipt.text)
+                    current = (await client.get(f"/api/projects/{project_id}", headers=auth)).json()
+                    self.assertEqual(current["invoiced_amount"], 150)
+                    self.assertEqual(current["received_amount"], 50.01)
+                    self.assertEqual(current["unreceived_amount"], 99.99)
+                    self.assertTrue(current["invoice_date"].startswith("2026-09-24"))
+
+                    edited = await client.put(f"{invoices_url}/{invoice.json()['id']}", headers=auth, json={
+                        "amount": 40, "occurred_on": "2026-09-26",
+                    })
+                    self.assertEqual(edited.status_code, 200, edited.text)
+                    self.assertEqual((await client.get(f"/api/projects/{project_id}", headers=auth)).json()["invoiced_amount"], 140.02)
+                    deleted = await client.delete(f"{receipts_url}/{receipt.json()['id']}", headers=auth)
+                    self.assertEqual(deleted.status_code, 200)
+                    self.assertEqual((await client.get(f"/api/projects/{project_id}", headers=auth)).json()["received_amount"], 30.01)
+
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=other_auth, json={
+                        "member_ids": [other_user.json()["id"]],
+                    })).status_code, 403)
+                    staff = await client.post("/api/users", headers=auth, json={
+                        "username": "office_staff", "password": "another-password",
+                        "real_name": "行政人员", "role": "admin_staff",
+                    })
+                    staff_login = await client.post("/api/auth/login", json={
+                        "username": "office_staff", "password": "another-password",
+                    })
+                    staff_auth = {"Authorization": f"Bearer {staff_login.json()['access_token']}"}
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=staff_auth, json={
+                        "member_ids": [staff.json()["id"]],
+                    })).status_code, 403)
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
+                        "report_year": 2027,
+                    })).status_code, 400)
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
+                        "invoiced_amount": 900,
+                    })).status_code, 422)
+                    self.assertEqual((await client.get(invoices_url, headers=other_auth)).status_code, 403)
+                    self.assertEqual((await client.post(invoices_url, headers=other_auth, json={
+                        "amount": 10, "occurred_on": "2026-09-24",
+                    })).status_code, 403)
+
+                    new_project = {
+                        "firm": "Example Firm", "report_type": "Audit", "report_year": 2026,
+                        "customer_name": "Sample Client", "leader_id": practitioner.json()["id"],
+                    }
+                    created = await asyncio.gather(*[
+                        client.post("/api/projects", headers=auth, json=new_project) for _ in range(2)
+                    ])
+                    self.assertTrue(all(result.status_code == 200 for result in created), [r.text for r in created])
+                    self.assertEqual(len({r.json()["project_id"] for r in created}), 2)
+                    numbered = await asyncio.gather(*[
+                        client.post(f"/api/projects/{r.json()['project_id']}/generate-report-no", headers=auth)
+                        for r in created
+                    ])
+                    self.assertTrue(all(result.status_code == 200 for result in numbered), [r.text for r in numbered])
+                    self.assertEqual(len({r.json()["report_no"] for r in numbered}), 2)
             finally:
                 os.chdir(old_cwd)
                 sys.path.remove(str(backend_dir))

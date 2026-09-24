@@ -129,12 +129,27 @@ export interface ProjectUpdate {
   scale?: string
   business_source?: string
   contract_amount?: number
-  invoiced_amount?: number
-  invoice_date?: string
-  received_amount?: number
-  receive_date?: string
   signer1_id?: number
   signer2_id?: number
+}
+
+export type FinanceKind = 'invoices' | 'receipts'
+
+export interface FinancialEntry {
+  id: number
+  amount: number
+  occurred_on: string | null
+  reference: string | null
+  note: string | null
+  is_legacy: boolean
+  created_at: string
+}
+
+export interface FinancialEntryInput {
+  amount: number
+  occurred_on: string | null
+  reference?: string | null
+  note?: string | null
 }
 
 export interface ProjectListResponse {

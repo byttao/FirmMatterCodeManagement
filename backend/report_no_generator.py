@@ -10,6 +10,7 @@
 - {nnn}  - 编号，n 的个数决定位数，如 {nnn}=001, {nnnn}=0001
 """
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 import re
 import models
 
@@ -59,9 +60,12 @@ def generate_report_no(db: Session, firm: str, report_type: str, year: int) -> s
     """生成报告编号；由调用方与项目状态一起提交。"""
     rule = get_rule(db, firm, report_type, year)
 
-    rule.current_sequence += 1
-    db.flush()
-    current_seq = rule.current_sequence
+    current_seq = db.execute(
+        update(models.ReportNumberRule)
+        .where(models.ReportNumberRule.id == rule.id)
+        .values(current_sequence=models.ReportNumberRule.current_sequence + 1)
+        .returning(models.ReportNumberRule.current_sequence)
+    ).scalar_one()
 
     seq_str = str(current_seq).zfill(rule.sequence_digits)
 

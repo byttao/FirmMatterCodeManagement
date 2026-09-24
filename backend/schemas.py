@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, condecimal, constr
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date
 
 
 # ============ 用户相关 ============
@@ -171,13 +171,12 @@ class ProjectUpdate(BaseModel):
     scale: Optional[str] = None
     business_source: Optional[str] = None
     contract_amount: Optional[float] = None
-    invoiced_amount: Optional[float] = None
-    invoice_date: Optional[datetime] = None
-    received_amount: Optional[float] = None
-    receive_date: Optional[datetime] = None
     signer1_id: Optional[int] = None
     signer2_id: Optional[int] = None
     member_ids: Optional[List[int]] = None
+
+    class Config:
+        extra = "forbid"
 
 
 class ProjectResponse(ProjectBase):
@@ -210,6 +209,33 @@ class ProjectListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+    class Config:
+        orm_mode = True
+
+
+class FinancialEntryCreate(BaseModel):
+    amount: condecimal(gt=0, max_digits=12, decimal_places=2)
+    occurred_on: date
+    reference: Optional[constr(max_length=100)] = None
+    note: Optional[constr(max_length=500)] = None
+
+
+class FinancialEntryUpdate(BaseModel):
+    amount: Optional[condecimal(gt=0, max_digits=12, decimal_places=2)] = None
+    occurred_on: Optional[date] = None
+    reference: Optional[constr(max_length=100)] = None
+    note: Optional[constr(max_length=500)] = None
+
+
+class FinancialEntryResponse(BaseModel):
+    id: int
+    amount: float
+    occurred_on: Optional[date]
+    reference: Optional[str]
+    note: Optional[str]
+    is_legacy: bool
+    created_at: datetime
 
     class Config:
         orm_mode = True

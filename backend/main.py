@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
 import models
 import schemas
+from finance import migrate_legacy_finance, refresh_project_finance, cents
 from auth import (
     get_password_hash, verify_password, create_access_token,
     get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -33,8 +34,9 @@ from report_no_generator import (
 
 # 创建表
 Base.metadata.create_all(bind=engine)
+migrate_legacy_finance()
 
-app = FastAPI(title="事务所项目编号管理系统", version="0.1.0")
+app = FastAPI(title="事务所项目编号管理系统", version="0.1.1")
 
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]
@@ -759,46 +761,18 @@ async def download_signer_template(
 
 # ==================== 项目管理 ====================
 
-def generate_unique_project_no(db: Session, fiscal_year: int, max_retries: int = 3) -> str:
-    """生成唯一的项目编号，使用乐观锁重试机制防止竞态条件。
-
-    Args:
-        db: 数据库会话
-        fiscal_year: 编号年度
-        max_retries: 最大重试次数
-
-    Returns:
-        唯一的项目编号字符串
-
-    Raises:
-        HTTPException: 超过最大重试次数仍无法生成唯一编号
-    """
-    for attempt in range(max_retries):
-        count = db.query(models.Project).filter(
-            models.Project.project_id.contains(f"PRJ-{fiscal_year}")
-        ).count()
-        project_no = f"PRJ-{fiscal_year}-{str(count + 1).zfill(4)}"
-
-        # 检查是否已存在该编号
-        existing = db.query(models.Project).filter(
-            models.Project.project_id == project_no
-        ).first()
-        if not existing:
-            return project_no
-
-    # 如果简单重试后仍冲突，使用最大序号+1的方式
-    last_project = db.query(models.Project).filter(
-        models.Project.project_id.contains(f"PRJ-{fiscal_year}")
-    ).order_by(models.Project.project_id.desc()).first()
-
-    if last_project:
-        try:
-            last_seq = int(last_project.project_id.split("-")[-1])
-            return f"PRJ-{fiscal_year}-{str(last_seq + 1).zfill(4)}"
-        except (ValueError, IndexError):
-            pass
-
-    raise HTTPException(status_code=500, detail="生成项目编号失败，请重试")
+def generate_unique_project_no(db: Session, fiscal_year: int) -> str:
+    """Called under the SQLite write lock held by create_project."""
+    prefix = f"PRJ-{fiscal_year}-"
+    project_ids = db.query(models.Project.project_id).filter(
+        models.Project.project_id.like(f"{prefix}%")
+    ).all()
+    last_seq = max((
+        int(project_id[0][len(prefix):])
+        for project_id in project_ids
+        if project_id[0][len(prefix):].isdigit()
+    ), default=0)
+    return f"{prefix}{last_seq + 1:04d}"
 
 
 def resolve_project(db: Session, project_id: str):
@@ -901,6 +875,9 @@ async def create_project(
     if not can_create_project(current_user):
         raise HTTPException(status_code=403, detail="无权限创建项目")
 
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+
     # 获取用户的当前操作年度
     fiscal_year = current_user.fiscal_year or datetime.now().year
 
@@ -963,20 +940,8 @@ async def create_project(
     )
     db.add(project)
 
-    # 处理 IntegrityError（并发时 project_id 唯一约束冲突），最多重试3次
-    for _retry in range(3):
-        try:
-            db.flush()
-            break
-        except IntegrityError:
-            db.rollback()
-            # 重新生成唯一编号并重新添加项目
-            new_project_id = generate_unique_project_no(db, fiscal_year)
-            project.project_id = new_project_id
-            db.add(project)
-    else:
-        # 3次重试均失败
-        raise HTTPException(status_code=500, detail="创建项目失败，项目编号冲突，请重试")
+    db.flush()
+    db.add(models.FinanceMigration(project_id=project.id))
 
     # 添加团队成员
     for member_id in (project_data.member_ids or []):
@@ -999,24 +964,16 @@ async def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
 
-    # 财务字段检查
-    financial_fields = ['invoiced_amount', 'invoice_date', 'received_amount', 'receive_date']
-    is_financial_update = any(getattr(project_data, f) is not None for f in financial_fields)
-    if is_financial_update and not can_edit_financial_fields(current_user):
-        raise HTTPException(status_code=403, detail="无权限编辑财务字段")
-
-    # 普通字段检查
-    non_financial_update = any(
-        getattr(project_data, f) is not None
-        for f in ['firm', 'report_type', 'customer_name', 'contract_no', 'order_date',
-                  'leader_id', 'project_status', 'project_phase', 'priority',
-                  'scale', 'business_source', 'contract_amount', 'signer1_id', 'signer2_id']
-    )
-    if non_financial_update and not can_edit_project(current_user, project):
+    update_data = project_data.dict(exclude_unset=True)
+    if update_data and not can_edit_project(current_user, project):
         raise HTTPException(status_code=403, detail="无权限编辑此项目")
 
+    if 'report_year' in update_data and (
+        update_data['report_year'] is None or update_data['report_year'] > project.fiscal_year
+    ):
+        raise HTTPException(status_code=400, detail="业务年度不能超过项目编号年度，且不能为空")
+
     # 验证签字人联动：签字人一和签字人二不能为同一人
-    update_data = project_data.dict(exclude_unset=True)
     signer1_id = update_data.get('signer1_id', project.signer1_id)
     signer2_id = update_data.get('signer2_id', project.signer2_id)
     firm = update_data.get('firm', project.firm)
@@ -1063,8 +1020,7 @@ async def update_project(
         setattr(project, field, value)
 
     # 更新计算字段
-    project.uninvoiced_amount = project.contract_amount - project.invoiced_amount
-    project.unreceived_amount = project.invoiced_amount - project.received_amount
+    refresh_project_finance(db, project)
 
     try:
         db.commit()
@@ -1076,6 +1032,101 @@ async def update_project(
         raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
 
     return project
+
+
+def finance_kind(kind: str) -> str:
+    kinds = {"invoices": "invoice", "receipts": "receipt"}
+    if kind not in kinds:
+        raise HTTPException(status_code=404, detail="财务记录类型不存在")
+    return kinds[kind]
+
+
+def finance_project(db: Session, project_id: str, user: models.User, write: bool = False):
+    project = resolve_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if write and not can_edit_financial_fields(user):
+        raise HTTPException(status_code=403, detail="无权限编辑财务记录")
+    if not can_view_project(user, project):
+        raise HTTPException(status_code=403, detail="无权限查看此项目")
+    return project
+
+
+@app.get("/api/projects/{project_id}/finance/{kind}", response_model=List[schemas.FinancialEntryResponse])
+async def list_financial_entries(
+    project_id: str, kind: str, db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    entry_kind = finance_kind(kind)
+    project = finance_project(db, project_id, current_user)
+    return db.query(models.FinancialEntry).filter_by(
+        project_id=project.id, kind=entry_kind
+    ).order_by(models.FinancialEntry.occurred_on.desc(), models.FinancialEntry.id.desc()).all()
+
+
+@app.post("/api/projects/{project_id}/finance/{kind}", response_model=schemas.FinancialEntryResponse)
+async def create_financial_entry(
+    project_id: str, kind: str, data: schemas.FinancialEntryCreate,
+    db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
+):
+    entry_kind = finance_kind(kind)
+    project = finance_project(db, project_id, current_user, write=True)
+    entry = models.FinancialEntry(
+        project_id=project.id, kind=entry_kind, amount_cents=cents(data.amount),
+        occurred_on=data.occurred_on, reference=data.reference, note=data.note,
+    )
+    db.add(entry)
+    db.flush()
+    refresh_project_finance(db, project)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def get_financial_entry(db: Session, project: models.Project, kind: str, entry_id: int):
+    entry = db.query(models.FinancialEntry).filter_by(
+        id=entry_id, project_id=project.id, kind=finance_kind(kind)
+    ).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="财务记录不存在")
+    return entry
+
+
+@app.put("/api/projects/{project_id}/finance/{kind}/{entry_id}", response_model=schemas.FinancialEntryResponse)
+async def update_financial_entry(
+    project_id: str, kind: str, entry_id: int, data: schemas.FinancialEntryUpdate,
+    db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
+):
+    project = finance_project(db, project_id, current_user, write=True)
+    entry = get_financial_entry(db, project, kind, entry_id)
+    changes = data.dict(exclude_unset=True)
+    if 'occurred_on' in changes and changes['occurred_on'] is None and not entry.is_legacy:
+        raise HTTPException(status_code=400, detail="日期不能为空")
+    if 'amount' in changes:
+        if changes['amount'] is None:
+            raise HTTPException(status_code=400, detail="金额不能为空")
+        entry.amount_cents = cents(changes.pop('amount'))
+    for field, value in changes.items():
+        setattr(entry, field, value)
+    db.flush()
+    refresh_project_finance(db, project)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@app.delete("/api/projects/{project_id}/finance/{kind}/{entry_id}")
+async def delete_financial_entry(
+    project_id: str, kind: str, entry_id: int,
+    db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
+):
+    project = finance_project(db, project_id, current_user, write=True)
+    entry = get_financial_entry(db, project, kind, entry_id)
+    db.delete(entry)
+    db.flush()
+    refresh_project_finance(db, project)
+    db.commit()
+    return {"message": "财务记录已删除"}
 
 
 @app.delete("/api/projects/{project_id}")
@@ -1108,6 +1159,9 @@ async def generate_report_number(
 ):
     if not can_generate_report_no(current_user):
         raise HTTPException(status_code=403, detail="无权限生成编号")
+
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
 
     project = resolve_project(db, project_id)
 

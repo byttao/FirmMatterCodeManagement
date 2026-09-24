@@ -144,7 +144,7 @@ export default function Layout() {
           </nav>
           {/* 版本信息 */}
           <div className="absolute bottom-4 left-4 text-xs text-muted-foreground">
-            v0.1.0
+            v0.1.1
           </div>
         </aside>
 

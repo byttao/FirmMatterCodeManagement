@@ -2,7 +2,7 @@ import axios from 'axios'
 import type {
   LoginRequest, LoginResponse, User,
   Project, ProjectCreate, ProjectUpdate, ProjectListResponse,
-  DashboardStats, User as UserType, Signer, SignerCreate
+  DashboardStats, User as UserType, Signer, SignerCreate, FinanceKind, FinancialEntry, FinancialEntryInput
 } from '@/types'
 
 const api = axios.create({
@@ -76,6 +76,17 @@ export const projectApi = {
   generateReportNo: (id: string | number) => api.post<{ report_no: string; message: string }>(`/projects/${id}/generate-report-no`),
 
   recycleReportNo: (id: string | number) => api.post<{ message: string }>(`/projects/${id}/recycle-report-no`),
+}
+
+export const financeApi = {
+  list: (projectId: number, kind: FinanceKind) =>
+    api.get<FinancialEntry[]>(`/projects/${projectId}/finance/${kind}`),
+  create: (projectId: number, kind: FinanceKind, data: FinancialEntryInput) =>
+    api.post<FinancialEntry>(`/projects/${projectId}/finance/${kind}`, data),
+  update: (projectId: number, kind: FinanceKind, entryId: number, data: FinancialEntryInput) =>
+    api.put<FinancialEntry>(`/projects/${projectId}/finance/${kind}/${entryId}`, data),
+  delete: (projectId: number, kind: FinanceKind, entryId: number) =>
+    api.delete(`/projects/${projectId}/finance/${kind}/${entryId}`),
 }
 
 // 看板 API

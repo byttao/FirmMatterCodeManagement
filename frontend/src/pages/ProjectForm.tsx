@@ -6,12 +6,12 @@ import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
 import type { Project, ProjectCreate, ProjectUpdate, Signer } from '@/types'
 import { getUserDisplayName } from '@/types'
-import { formatCurrency } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { MoneyInput } from '@/components/ui/money-input'
+import { FinancialLedger } from '@/components/FinancialLedger'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -97,13 +97,6 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     }
   }
 
-
-  const [financialData, setFinancialData] = useState({
-    invoiced_amount: 0,
-    invoice_date: '',
-    received_amount: 0,
-    receive_date: '',
-  })
 
   const [project, setProject] = useState<Project | null>(null)
 
@@ -294,12 +287,6 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
       })
       loadSignersByFirm(p.firm)
       loadReportTypesByFirm(p.firm)
-      setFinancialData({
-        invoiced_amount: p.invoiced_amount,
-        invoice_date: p.invoice_date ? p.invoice_date.split('T')[0] : '',
-        received_amount: p.received_amount,
-        receive_date: p.receive_date ? p.receive_date.split('T')[0] : '',
-      })
       setLoading(false)
     } catch (err: any) {
       console.error('加载项目失败', err)
@@ -383,18 +370,6 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
       return
     }
 
-    // 验证财务日期必填（当有对应金额时）
-    if (user?.role === 'admin' || user?.role === 'admin_staff') {
-      if (financialData.invoiced_amount > 0 && !financialData.invoice_date) {
-        alert('有开票金额时，开票时间不能为空')
-        return
-      }
-      if (financialData.received_amount > 0 && !financialData.receive_date) {
-        alert('有收款金额时，收款时间不能为空')
-        return
-      }
-    }
-
     setSaving(true)
 
     try {
@@ -404,14 +379,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
       }
 
       if (isEdit && project) {
-        // 合并基础字段和财务字段，一次提交
         const fullData: ProjectUpdate = { ...data as ProjectUpdate }
-        if (user?.role === 'admin' || user?.role === 'admin_staff') {
-          fullData.invoiced_amount = financialData.invoiced_amount
-          fullData.invoice_date = financialData.invoice_date ? new Date(financialData.invoice_date).toISOString() : undefined
-          fullData.received_amount = financialData.received_amount
-          fullData.receive_date = financialData.receive_date ? new Date(financialData.receive_date).toISOString() : undefined
-        }
         await projectApi.update(project.id, fullData)
         // 保存成功后重新加载项目，刷新服务端计算的字段（未开票金额、未收款金额等）
         await loadProject()
@@ -990,62 +958,8 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
                 <DollarSign className="w-5 h-5" />
                 财务信息
               </CardTitle>
-              <CardDescription>
-                {isFinancialFieldEditable ? '录入开票和收款信息' : '查看财务信息'}
-              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="space-y-2">
-                  <Label>开票金额</Label>
-                  <MoneyInput
-                    value={financialData.invoiced_amount}
-                    onChange={(val) => { setDirty(true); setFinancialData(prev => ({ ...prev, invoiced_amount: val })) }}
-                    disabled={isPreview || !isFinancialFieldEditable}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>开票时间</Label>
-                  <DatePicker
-                    value={financialData.invoice_date}
-                    onChange={(date) => { setDirty(true); setFinancialData(prev => ({ ...prev, invoice_date: date })) }}
-                    disabled={isPreview || !isFinancialFieldEditable}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>收款金额</Label>
-                  <MoneyInput
-                    value={financialData.received_amount}
-                    onChange={(val) => { setDirty(true); setFinancialData(prev => ({ ...prev, received_amount: val })) }}
-                    disabled={isPreview || !isFinancialFieldEditable}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>收款时间</Label>
-                  <DatePicker
-                    value={financialData.receive_date}
-                    onChange={(date) => { setDirty(true); setFinancialData(prev => ({ ...prev, receive_date: date })) }}
-                    disabled={isPreview || !isFinancialFieldEditable}
-                  />
-                </div>
-              </div>
-              {project && (
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div className="p-3 bg-blue-50 rounded-lg">
-                    <span className="text-muted-foreground">未开票金额：</span>
-                    <span className="font-semibold text-blue-600">
-                      {formatCurrency(project.contract_amount - project.invoiced_amount)}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-green-50 rounded-lg">
-                    <span className="text-muted-foreground">未收款金额：</span>
-                    <span className="font-semibold text-green-600">
-                      {formatCurrency(project.invoiced_amount - project.received_amount)}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </CardContent>
+            <CardContent>{project && <FinancialLedger project={project} canEdit={!isPreview && isFinancialFieldEditable} onProjectChange={setProject} />}</CardContent>
           </Card>
         )}
 

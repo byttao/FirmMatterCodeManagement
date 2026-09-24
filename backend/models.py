@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text, Enum, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, Date, Boolean, ForeignKey, Text, Enum, Index, CheckConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -93,6 +93,7 @@ class Project(Base):
 
     # 关联：团队成员
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
+    financial_entries = relationship("FinancialEntry", back_populates="project", cascade="all, delete-orphan")
 
     @property
     def uninvoiced(self):
@@ -113,6 +114,36 @@ class ProjectMember(Base):
 
     project = relationship("Project", back_populates="members")
     user = relationship("User", back_populates="team_projects")
+
+
+class FinancialEntry(Base):
+    __tablename__ = "financial_entries"
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    kind = Column(String(10), nullable=False)  # invoice / receipt
+    amount_cents = Column(Integer, nullable=False)
+    occurred_on = Column(Date, nullable=True)  # 旧版汇总记录可能没有日期
+    reference = Column(String(100), nullable=True)
+    note = Column(String(500), nullable=True)
+    is_legacy = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    project = relationship("Project", back_populates="financial_entries")
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('invoice', 'receipt')"),
+        CheckConstraint("amount_cents > 0"),
+    )
+
+    @property
+    def amount(self):
+        return self.amount_cents / 100
+
+
+class FinanceMigration(Base):
+    __tablename__ = "finance_migrations"
+
+    project_id = Column(Integer, ForeignKey("projects.id"), primary_key=True)
 
 
 class FiscalYear(Base):
