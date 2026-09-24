@@ -65,6 +65,7 @@ export default function Layout() {
   const navItems = [
     { path: '/', label: '数据看板', icon: LayoutDashboard, show: true },
     { path: '/projects', label: '项目管理', icon: Briefcase, show: true },
+    { path: '/signed-projects', label: '我签字的项目', icon: PenLine, show: user?.role === 'practitioner' },
     { path: '/signers', label: '签字人管理', icon: PenLine, show: user?.role === 'admin' || user?.role === 'admin_staff' },
     { path: '/fiscal-year-configs', label: '编号年度配置', icon: Settings, show: user?.role === 'admin' || user?.role === 'admin_staff' },
     { path: '/users', label: '用户管理', icon: Users, show: user?.role === 'admin' },
@@ -144,7 +145,7 @@ export default function Layout() {
           </nav>
           {/* 版本信息 */}
           <div className="absolute bottom-4 left-4 text-xs text-muted-foreground">
-            v0.1.3
+            v0.1.4
           </div>
         </aside>
 

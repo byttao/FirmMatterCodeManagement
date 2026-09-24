@@ -1,5 +1,5 @@
 from pydantic import BaseModel, condecimal, constr
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime, date
 
 
@@ -11,7 +11,9 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    password: str
+    username: constr(regex=r"^[A-Za-z0-9_.-]{3,50}$")
+    role: Literal["admin", "practitioner", "admin_staff"]
+    password: constr(min_length=8)
 
 
 class UserResponse(UserBase):
@@ -26,8 +28,8 @@ class UserResponse(UserBase):
 
 class UserUpdate(BaseModel):
     real_name: Optional[str] = None
-    role: Optional[str] = None
-    password: Optional[str] = None
+    role: Optional[Literal["admin", "practitioner", "admin_staff"]] = None
+    password: Optional[constr(min_length=8)] = None
     is_active: Optional[bool] = None
 
 
@@ -37,6 +39,7 @@ class PractitionerResponse(BaseModel):
     username: str
     real_name: str
     role: str
+    is_active: bool
 
     class Config:
         orm_mode = True
@@ -48,17 +51,20 @@ class SignerBase(BaseModel):
     signer_type: str  # 关联的事务所名称
 
 
-class SignerCreate(SignerBase):
-    pass
+class SignerCreate(BaseModel):
+    user_id: int
+    signer_type: str
 
 
 class SignerUpdate(BaseModel):
-    name: Optional[str] = None
+    user_id: Optional[int] = None
     signer_type: Optional[str] = None
 
 
 class SignerResponse(SignerBase):
     id: int
+    user_id: Optional[int] = None
+    user: Optional[PractitionerResponse] = None
     is_active: bool
     disabled_at: Optional[datetime] = None
     created_at: datetime

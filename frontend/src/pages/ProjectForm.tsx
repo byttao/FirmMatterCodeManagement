@@ -5,7 +5,7 @@ import { fiscalYearConfigApi } from '@/api/fiscalYearConfig'
 import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
 import type { Project, ProjectCreate, ProjectUpdate, Signer } from '@/types'
-import { getUserDisplayName } from '@/types'
+import { getSignerDisplayName, getUserDisplayName } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -282,8 +282,8 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
         scale: p.scale || '',
         business_source: p.business_source || '',
         contract_amount: p.contract_amount,
-        signer1_id: p.signer1_id || undefined,
-        signer2_id: p.signer2_id || undefined,
+        signer1_id: p.signer1_id,
+        signer2_id: p.signer2_id,
       })
       loadSignersByFirm(p.firm)
       loadReportTypesByFirm(p.firm)
@@ -305,20 +305,20 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     setFormData(prev => ({ ...prev, [field]: value }))
     // 切换事务所时重置报告类型，并重新加载业务类型
     if (field === 'firm') {
-      setFormData(prev => ({ ...prev, report_type: '', signer1_id: undefined, signer2_id: undefined }))
+      setFormData(prev => ({ ...prev, report_type: '', signer1_id: null, signer2_id: null }))
       loadSignersByFirm(value)
       loadReportTypesByFirm(value)
     }
   }
 
   const handleSigner1Change = (signerId: string) => {
-    const id = signerId === '' || signerId === 'none' ? undefined : parseInt(signerId)
+    const id = signerId === '' || signerId === 'none' ? null : parseInt(signerId)
     setDirty(true)
     setFormData(prev => ({ ...prev, signer1_id: id }))
   }
 
   const handleSigner2Change = (signerId: string) => {
-    const id = signerId === '' || signerId === 'none' ? undefined : parseInt(signerId)
+    const id = signerId === '' || signerId === 'none' ? null : parseInt(signerId)
     setDirty(true)
     setFormData(prev => ({ ...prev, signer2_id: id }))
   }
@@ -773,13 +773,18 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">不选择</SelectItem>
+                    {project?.signer1 && !signers.some(s => s.id === project.signer1_id) && (
+                      <SelectItem value={String(project.signer1_id)} disabled>
+                        {getSignerDisplayName(project.signer1)}（历史记录）
+                      </SelectItem>
+                    )}
                     {signers.filter(s => s && typeof s.id === 'number').map(s => (
                       <SelectItem
                         key={s.id}
                         value={s.id.toString()}
                         disabled={isFieldDisabled || s.id === formData.signer2_id}
                       >
-                        {s.name}
+                        {getSignerDisplayName(s)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -797,13 +802,18 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">不选择</SelectItem>
+                    {project?.signer2 && !signers.some(s => s.id === project.signer2_id) && (
+                      <SelectItem value={String(project.signer2_id)} disabled>
+                        {getSignerDisplayName(project.signer2)}（历史记录）
+                      </SelectItem>
+                    )}
                     {signers.filter(s => s && typeof s.id === 'number').map(s => (
                       <SelectItem
                         key={s.id}
                         value={s.id.toString()}
                         disabled={isFieldDisabled || s.id === formData.signer1_id}
                       >
-                        {s.name}
+                        {getSignerDisplayName(s)}
                       </SelectItem>
                     ))}
                   </SelectContent>

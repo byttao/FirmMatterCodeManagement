@@ -12,6 +12,32 @@ import httpx
 
 
 class FirstRunTest(unittest.IsolatedAsyncioTestCase):
+    def test_signer_account_migration_preserves_legacy_rows(self):
+        from sqlalchemy import create_engine, inspect, text
+        backend_dir = Path(__file__).resolve().parents[1]
+        sys.path.insert(0, str(backend_dir))
+        try:
+            from migrations import migrate_signer_accounts
+            with tempfile.TemporaryDirectory() as data_dir:
+                engine = create_engine(f"sqlite:///{Path(data_dir) / 'old.sqlite'}")
+                with engine.begin() as connection:
+                    connection.execute(text("CREATE TABLE users (id INTEGER PRIMARY KEY)"))
+                    connection.execute(text(
+                        "CREATE TABLE signers (id INTEGER PRIMARY KEY, name TEXT, signer_type TEXT)"
+                    ))
+                    connection.execute(text(
+                        "INSERT INTO signers (id, name, signer_type) VALUES (1, 'Old Signer', 'Old Firm')"
+                    ))
+                migrate_signer_accounts(engine)
+                migrate_signer_accounts(engine)
+                self.assertIn("user_id", {column["name"] for column in inspect(engine).get_columns("signers")})
+                with engine.connect() as connection:
+                    self.assertEqual(connection.execute(text("SELECT name, user_id FROM signers")).one(),
+                                     ("Old Signer", None))
+                engine.dispose()
+        finally:
+            sys.path.remove(str(backend_dir))
+
     async def test_setup_and_number_lifecycle(self):
         backend_dir = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as data_dir:
@@ -260,6 +286,127 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     ])
                     self.assertTrue(all(result.status_code == 200 for result in numbered), [r.text for r in numbered])
                     self.assertEqual(len({r.json()["report_no"] for r in numbered}), 2)
+
+                    # Distinct accounts with the same legal name remain distinct signers.
+                    self.assertEqual((await client.put(
+                        f"/api/users/{other_user.json()['id']}", headers=auth, json={"real_name": "执业人员"}
+                    )).status_code, 200)
+                    first_signer = await client.post("/api/signers", headers=auth, json={
+                        "user_id": practitioner.json()["id"], "signer_type": "Example Firm",
+                    })
+                    second_signer = await client.post("/api/signers", headers=auth, json={
+                        "user_id": other_user.json()["id"], "signer_type": "Example Firm",
+                    })
+                    self.assertEqual(first_signer.status_code, 200, first_signer.text)
+                    self.assertEqual(second_signer.status_code, 200, second_signer.text)
+                    self.assertEqual(first_signer.json()["name"], second_signer.json()["name"])
+                    self.assertNotEqual(first_signer.json()["user"]["username"], second_signer.json()["user"]["username"])
+                    self.assertEqual((await client.post("/api/signers", headers=auth, json={
+                        "user_id": staff.json()["id"], "signer_type": "Example Firm",
+                    })).status_code, 400)
+                    self.assertEqual((await client.post("/api/signers", headers=auth, json={
+                        "user_id": other_user.json()["id"], "signer_type": "Example Firm",
+                    })).status_code, 400)
+
+                    signed = await client.post("/api/projects", headers=auth, json={
+                        **new_project, "customer_name": "Signed Client",
+                        "signer1_id": second_signer.json()["id"],
+                    })
+                    self.assertEqual(signed.status_code, 200, signed.text)
+                    signed_id = signed.json()["project_id"]
+                    self.assertEqual((await client.get(f"/api/projects/{signed_id}", headers=other_auth)).status_code, 200)
+                    mine = await client.get("/api/projects/signed-by-me", headers=other_auth)
+                    self.assertEqual(mine.status_code, 200, mine.text)
+                    self.assertEqual([item["project_id"] for item in mine.json()["items"]], [signed_id])
+                    self.assertEqual((await client.get("/api/projects/signed-by-me", headers=staff_auth)).status_code, 403)
+                    self.assertIn(signed_id, [item["project_id"] for item in (
+                        await client.get("/api/projects", headers=other_auth)
+                    ).json()["items"]])
+                    self.assertEqual((await client.post("/api/projects", headers=auth, json={
+                        **new_project, "signer1_id": 999999,
+                    })).status_code, 400)
+                    self.assertEqual((await client.post("/api/projects", headers=auth, json={
+                        **new_project, "leader_id": staff.json()["id"],
+                    })).status_code, 400)
+
+                    # Old signer references survive upgrade until an administrator links an account.
+                    with main.SessionLocal() as db:
+                        legacy = models.Signer(name="旧签字人", signer_type="Example Firm", is_active=True)
+                        db.add(legacy)
+                        db.commit()
+                        legacy_id = legacy.id
+                        old_project = db.query(models.Project).filter_by(project_id=project_id).one()
+                        old_project.signer1_id = legacy_id
+                        db.commit()
+                    self.assertNotIn(legacy_id, [item["id"] for item in (
+                        await client.get("/api/signers/by-firm/Example Firm", headers=auth)
+                    ).json()])
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
+                        "project_phase": "归档",
+                    })).status_code, 200)
+                    third = await client.post("/api/users", headers=auth, json={
+                        "username": "third_auditor", "password": "another-password",
+                        "real_name": "执业人员", "role": "practitioner",
+                    })
+                    third_login = await client.post("/api/auth/login", json={
+                        "username": "third_auditor", "password": "another-password",
+                    })
+                    third_auth = {"Authorization": f"Bearer {third_login.json()['access_token']}"}
+                    self.assertEqual((await client.get(f"/api/projects/{project_id}", headers=third_auth)).status_code, 403)
+                    linked = await client.put(f"/api/signers/{legacy_id}", headers=auth, json={
+                        "user_id": third.json()["id"],
+                    })
+                    self.assertEqual(linked.status_code, 200, linked.text)
+                    self.assertEqual(linked.json()["name"], "旧签字人")
+                    self.assertEqual((await client.get(f"/api/projects/{project_id}", headers=third_auth)).status_code, 200)
+                    self.assertEqual((await client.put(f"/api/signers/{legacy_id}", headers=auth, json={
+                        "user_id": other_user.json()["id"],
+                    })).status_code, 400)
+                    fourth = await client.post("/api/users", headers=auth, json={
+                        "username": "fourth_auditor", "password": "another-password",
+                        "real_name": "执业人员", "role": "practitioner",
+                    })
+                    from io import BytesIO
+                    from openpyxl import Workbook
+                    workbook = Workbook()
+                    workbook.active.append(["执业账号", "事务所"])
+                    workbook.active.append(["fourth_auditor", "Example Firm"])
+                    workbook.active.append(["office_staff", "Example Firm"])
+                    output = BytesIO()
+                    workbook.save(output)
+                    imported = await client.post("/api/signers/import", headers=auth, files={
+                        "file": ("signers.xlsx", output.getvalue(),
+                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                    })
+                    self.assertEqual(imported.status_code, 200, imported.text)
+                    self.assertEqual(imported.json()["message"], "导入完成：新增 1 条，跳过 1 条")
+                    self.assertTrue(any(item["user_id"] == fourth.json()["id"] for item in (
+                        await client.get("/api/signers/by-firm/Example Firm", headers=auth)
+                    ).json()))
+                    self.assertEqual((await client.put(f"/api/users/{third.json()['id']}", headers=auth, json={
+                        "role": "admin_staff",
+                    })).status_code, 200)
+                    self.assertNotIn(legacy_id, [item["id"] for item in (
+                        await client.get("/api/signers/by-firm/Example Firm", headers=auth)
+                    ).json()])
+                    self.assertEqual((await client.post("/api/projects", headers=auth, json={
+                        **new_project, "signer1_id": legacy_id,
+                    })).status_code, 400)
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
+                        "project_phase": "归档",
+                    })).status_code, 200)
+                    cleared = await client.put(f"/api/projects/{project_id}", headers=auth, json={
+                        "signer1_id": None,
+                    })
+                    self.assertEqual(cleared.status_code, 200, cleared.text)
+                    self.assertIsNone(cleared.json()["signer1_id"])
+                    admin_id = (await client.get("/api/auth/me", headers=auth)).json()["id"]
+                    self.assertEqual((await client.put(f"/api/users/{admin_id}", headers=auth, json={
+                        "role": "practitioner",
+                    })).status_code, 400)
+                    self.assertEqual((await client.put(f"/api/users/{admin_id}", headers=auth, json={
+                        "is_active": False,
+                    })).status_code, 400)
             finally:
                 os.chdir(old_cwd)
                 sys.path.remove(str(backend_dir))

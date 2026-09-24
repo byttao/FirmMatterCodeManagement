@@ -24,6 +24,8 @@ class Signer(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)  # 签字人姓名
     signer_type = Column(String(100), nullable=False)  # 关联的事务所名称
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    user = relationship("User")
     is_active = Column(Boolean, default=True)  # 是否启用
     disabled_at = Column(DateTime, nullable=True)  # 禁用时间
     created_at = Column(DateTime, server_default=func.now())

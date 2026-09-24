@@ -5,6 +5,7 @@ import { Toaster } from '@/components/ui/toaster'
 import Login from '@/pages/Login'
 import Dashboard from '@/pages/Dashboard'
 import ProjectList from '@/pages/ProjectList'
+import SignedProjects from '@/pages/SignedProjects'
 import ProjectForm from '@/pages/ProjectForm'
 import UserManagement from '@/pages/UserManagement'
 import SignerManagement from '@/pages/SignerManagement'
@@ -43,6 +44,7 @@ function AppRoutes() {
       >
         <Route index element={<Dashboard />} />
         <Route path="projects" element={<ProjectList />} />
+        <Route path="signed-projects" element={<SignedProjects />} />
         <Route path="projects/new" element={<ProjectForm />} />
         <Route path="projects/:projectId" element={<ProjectForm readonly={true} />} />
         <Route path="projects/:projectId/edit" element={<ProjectForm readonly={false} />} />

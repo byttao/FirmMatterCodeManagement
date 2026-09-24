@@ -144,8 +144,11 @@ def can_view_project(user: models.User, project: models.Project) -> bool:
     if user.role in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
         return True
     if user.role == models.UserRole.PRACTITIONER.value:
-        # 执业人员：负责人或团队成员可查看
+        # 执业人员：负责人、团队成员或签字人可查看
         if project.leader_id == user.id:
+            return True
+        if ((project.signer1 and project.signer1.user_id == user.id) or
+                (project.signer2 and project.signer2.user_id == user.id)):
             return True
         member_ids = [m.user_id for m in project.members]
         return user.id in member_ids

@@ -16,9 +16,10 @@ from openpyxl.styles import Alignment
 
 from database import engine, get_db, Base, SessionLocal
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import text
+from sqlalchemy import text, or_
 import models
 import schemas
+from migrations import migrate_signer_accounts
 from finance import migrate_legacy_finance, refresh_project_finance, cents
 from auth import (
     get_password_hash, verify_password, create_access_token,
@@ -34,9 +35,10 @@ from report_no_generator import (
 
 # 创建表
 Base.metadata.create_all(bind=engine)
+migrate_signer_accounts(engine)
 migrate_legacy_finance()
 
-app = FastAPI(title="事务所项目编号管理系统", version="0.1.3")
+app = FastAPI(title="事务所项目编号管理系统", version="0.1.4")
 
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]
@@ -198,6 +200,12 @@ async def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
 
     # 确定操作年度：如果登录时指定了年度，使用指定年度；否则使用用户保存的年度或当前年份
     fiscal_year = form_data.fiscal_year or user.fiscal_year or datetime.now().year
+    configured_years = [row[0] for row in db.query(models.FiscalYear.year).order_by(models.FiscalYear.year.desc()).all()]
+    if fiscal_year not in configured_years:
+        if form_data.fiscal_year is not None:
+            raise HTTPException(status_code=400, detail="该编号年度尚未配置")
+        if configured_years:
+            fiscal_year = configured_years[0]
 
     # 更新用户的当前操作年度
     if user.fiscal_year != fiscal_year:
@@ -358,6 +366,12 @@ async def create_user(
     if not can_manage_users(current_user):
         raise HTTPException(status_code=403, detail="无权限")
 
+    real_name = user_data.real_name.strip()
+    if not real_name:
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+    if not db.query(models.FiscalYear.id).filter_by(year=current_user.fiscal_year).first():
+        raise HTTPException(status_code=400, detail="当前编号年度尚未配置")
+
     existing = db.query(models.User).filter(models.User.username == user_data.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="用户名已存在")
@@ -365,14 +379,24 @@ async def create_user(
     user = models.User(
         username=user_data.username,
         hashed_password=get_password_hash(user_data.password),
-        real_name=user_data.real_name,
+        real_name=real_name,
         role=user_data.role,
-        fiscal_year=datetime.now().year  # 设置默认年度为当前年
+        fiscal_year=current_user.fiscal_year
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
+
+
+def ensure_admin_remains(db: Session, user: models.User, next_role: str, next_active: bool):
+    if (user.role == models.UserRole.ADMIN.value and user.is_active
+            and (next_role != models.UserRole.ADMIN.value or not next_active)):
+        active_admins = db.query(models.User.id).filter_by(
+            role=models.UserRole.ADMIN.value, is_active=True
+        ).count()
+        if active_admins <= 1:
+            raise HTTPException(status_code=400, detail="必须保留至少一名启用的管理人员")
 
 
 @app.put("/api/users/{user_id}", response_model=schemas.UserResponse)
@@ -384,13 +408,22 @@ async def update_user(
 ):
     if not can_manage_users(current_user):
         raise HTTPException(status_code=403, detail="无权限")
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
 
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
+    next_role = user_data.role if user_data.role is not None else user.role
+    next_active = user_data.is_active if user_data.is_active is not None else user.is_active
+    ensure_admin_remains(db, user, next_role, next_active)
+
     if user_data.real_name is not None:
-        user.real_name = user_data.real_name
+        real_name = user_data.real_name.strip()
+        if not real_name:
+            raise HTTPException(status_code=400, detail="姓名不能为空")
+        user.real_name = real_name
     if user_data.role is not None:
         user.role = user_data.role
     if user_data.password:
@@ -411,6 +444,8 @@ async def delete_user(
 ):
     if not can_manage_users(current_user):
         raise HTTPException(status_code=403, detail="无权限")
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="不能删除自己")
 
@@ -418,12 +453,67 @@ async def delete_user(
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
+    ensure_admin_remains(db, user, user.role, False)
     user.is_active = False
     db.commit()
     return {"message": "删除成功"}
 
 
 # ==================== 签字人管理 ====================
+def eligible_signer_user(db: Session, user_id: int) -> models.User:
+    user = db.query(models.User).filter_by(id=user_id).first()
+    if not user or not user.is_active or user.role != models.UserRole.PRACTITIONER.value:
+        raise HTTPException(status_code=400, detail="所选人员必须是启用的执业人员账号")
+    return user
+
+
+def signer_used(db: Session, signer_id: int) -> bool:
+    return db.query(models.Project.id).filter(or_(
+        models.Project.signer1_id == signer_id,
+        models.Project.signer2_id == signer_id,
+    )).first() is not None
+
+
+def validate_project_people(db: Session, leader_id: int, member_ids: list[int],
+                            original: Optional[models.Project] = None):
+    if original is None or leader_id != original.leader_id:
+        eligible_signer_user(db, leader_id)
+    if len(member_ids) != len(set(member_ids)):
+        raise HTTPException(status_code=400, detail="团队成员不能重复")
+    if leader_id in member_ids:
+        raise HTTPException(status_code=400, detail="负责人不能重复加入团队成员")
+    previous_members = {member.user_id for member in original.members} if original else set()
+    for member_id in member_ids:
+        if member_id not in previous_members:
+            eligible_signer_user(db, member_id)
+
+
+def validate_project_signers(db: Session, signer_ids: tuple[Optional[int], Optional[int]],
+                             firm: str, original: Optional[models.Project] = None):
+    if signer_ids[0] and signer_ids[0] == signer_ids[1]:
+        raise HTTPException(status_code=400, detail="签字人一和签字人二不能为同一人")
+    users = []
+    for position, signer_id in enumerate(signer_ids):
+        if signer_id is None:
+            continue
+        signer = db.query(models.Signer).filter_by(id=signer_id).first()
+        if not signer:
+            raise HTTPException(status_code=400, detail="签字人不存在")
+        if signer.signer_type != firm:
+            raise HTTPException(status_code=400, detail="签字人事务所与项目事务所不匹配")
+        # Existing history can be saved without reselecting an unlinked or retired signer.
+        unchanged = (original is not None and original.firm == firm and
+                     signer_id == (original.signer1_id if position == 0 else original.signer2_id))
+        if not unchanged:
+            if not signer.is_active or signer.user_id is None:
+                raise HTTPException(status_code=400, detail="该签字人未关联执业账号或已禁用")
+            eligible_signer_user(db, signer.user_id)
+        if signer.user_id is not None:
+            users.append(signer.user_id)
+    if len(users) != len(set(users)):
+        raise HTTPException(status_code=400, detail="两名签字人不能是同一执业人员")
+
+
 @app.get("/api/signers", response_model=list[schemas.SignerResponse])
 async def list_signers(
     signer_type: Optional[str] = None,
@@ -456,16 +546,19 @@ async def create_signer(
     if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
-    # 检查姓名是否重复（同事务所）
+    user = eligible_signer_user(db, signer_data.user_id)
+    if not db.query(models.FiscalYearFirm.id).filter_by(firm=signer_data.signer_type).first():
+        raise HTTPException(status_code=400, detail="事务所未配置")
     existing = db.query(models.Signer).filter(
-        models.Signer.name == signer_data.name,
+        models.Signer.user_id == user.id,
         models.Signer.signer_type == signer_data.signer_type
     ).first()
     if existing:
-        raise HTTPException(status_code=400, detail=f"已存在同名签字人：{signer_data.name}（{signer_data.signer_type}）")
+        raise HTTPException(status_code=400, detail="该执业人员已是此事务所签字人")
 
     signer = models.Signer(
-        name=signer_data.name,
+        name=user.real_name,
+        user_id=user.id,
         signer_type=signer_data.signer_type,
         is_active=True
     )
@@ -490,10 +583,31 @@ async def update_signer(
     if not signer:
         raise HTTPException(status_code=404, detail="签字人不存在")
 
-    if signer_data.name is not None:
-        signer.name = signer_data.name
+    if signer_data.user_id is not None:
+        user = eligible_signer_user(db, signer_data.user_id)
+        if signer.user_id is not None and signer.user_id != user.id:
+            raise HTTPException(status_code=400, detail="已关联的签字人不能改绑其他账号")
+        duplicate = db.query(models.Signer.id).filter(
+            models.Signer.user_id == user.id,
+            models.Signer.signer_type == (signer_data.signer_type or signer.signer_type),
+            models.Signer.id != signer.id,
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=400, detail="该执业人员已是此事务所签字人")
+        signer.user_id = user.id
     if signer_data.signer_type is not None:
+        if signer_data.signer_type != signer.signer_type and signer_used(db, signer.id):
+            raise HTTPException(status_code=400, detail="已有签字项目，不能修改所属事务所")
+        if not db.query(models.FiscalYearFirm.id).filter_by(firm=signer_data.signer_type).first():
+            raise HTTPException(status_code=400, detail="事务所未配置")
         signer.signer_type = signer_data.signer_type
+
+    if signer.user_id is not None and db.query(models.Signer.id).filter(
+        models.Signer.user_id == signer.user_id,
+        models.Signer.signer_type == signer.signer_type,
+        models.Signer.id != signer.id,
+    ).first():
+        raise HTTPException(status_code=400, detail="该执业人员已是此事务所签字人")
 
     db.commit()
     db.refresh(signer)
@@ -560,6 +674,9 @@ async def enable_signer(
     if not signer:
         raise HTTPException(status_code=404, detail="签字人不存在")
 
+    if signer.user_id is None:
+        raise HTTPException(status_code=400, detail="请先关联执业人员账号")
+    eligible_signer_user(db, signer.user_id)
     signer.is_active = True
     signer.disabled_at = None
     db.commit()
@@ -577,7 +694,9 @@ async def get_signers_by_firm(
     """
     return db.query(models.Signer).filter(
         models.Signer.signer_type == firm,
-        models.Signer.is_active == True
+        models.Signer.is_active == True,
+        models.Signer.user_id.isnot(None),
+        models.Signer.user.has(models.User.is_active == True, role=models.UserRole.PRACTITIONER.value),
     ).order_by(models.Signer.name).all()
 
 
@@ -603,7 +722,7 @@ async def import_signers(
     current_user: models.User = Depends(get_current_user)
 ):
     """导入签字人（Excel格式）
-    Excel格式：姓名, 事务所
+    Excel格式：账号, 事务所
     """
     if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
         raise HTTPException(status_code=403, detail="无权限管理签字人")
@@ -622,38 +741,46 @@ async def import_signers(
     imported = 0
     skipped = 0
     errors = []
+    seen = set()
 
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        if not row[0]:
+        if not row or not row[0]:
             continue
-        name = str(row[0]).strip()
+        username = str(row[0]).strip()
         firm = str(row[1]).strip() if len(row) > 1 and row[1] else None
-
-        if not name:
-            continue
-
         if not firm:
             errors.append(f"第{row_idx}行：事务所不能为空")
             skipped += 1
             continue
-
-        # 检查是否已存在同名
+        user = db.query(models.User).filter_by(username=username).first()
+        if not user or not user.is_active or user.role != models.UserRole.PRACTITIONER.value:
+            errors.append(f"第{row_idx}行：账号 {username} 不是启用的执业人员")
+            skipped += 1
+            continue
+        if not db.query(models.FiscalYearFirm.id).filter_by(firm=firm).first():
+            errors.append(f"第{row_idx}行：事务所未配置")
+            skipped += 1
+            continue
+        if (user.id, firm) in seen:
+            errors.append(f"第{row_idx}行：账号 {username}（{firm}）在文件中重复")
+            skipped += 1
+            continue
+        seen.add((user.id, firm))
         existing = db.query(models.Signer).filter(
-            models.Signer.name == name,
+            models.Signer.user_id == user.id,
             models.Signer.signer_type == firm
         ).first()
 
         if existing:
             if existing.is_active:
-                errors.append(f"第{row_idx}行：{name}（{firm}）已存在")
+                errors.append(f"第{row_idx}行：账号 {username}（{firm}）已存在")
             else:
-                # 重新启用已禁用的
                 existing.is_active = True
                 existing.disabled_at = None
                 imported += 1
             skipped += 1
         else:
-            signer = models.Signer(name=name, signer_type=firm, is_active=True)
+            signer = models.Signer(name=user.real_name, user_id=user.id, signer_type=firm, is_active=True)
             db.add(signer)
             imported += 1
 
@@ -682,13 +809,14 @@ async def export_signers(
     ws.title = "签字人"
 
     # 表头
-    headers = ["姓名", "事务所", "状态", "新增日期", "禁用日期"]
+    headers = ["姓名", "执业账号", "事务所", "状态", "新增日期", "禁用日期"]
     ws.append(headers)
 
     # 数据
     for s in signers:
         ws.append([
             s.name,
+            s.user.username if s.user else "未关联",
             s.signer_type,
             "启用" if s.is_active else "禁用",
             s.created_at.strftime("%Y-%m-%d") if s.created_at else "",
@@ -697,10 +825,11 @@ async def export_signers(
 
     # 调整列宽
     ws.column_dimensions['A'].width = 15
-    ws.column_dimensions['B'].width = 12
-    ws.column_dimensions['C'].width = 8
-    ws.column_dimensions['D'].width = 12
+    ws.column_dimensions['B'].width = 18
+    ws.column_dimensions['C'].width = 20
+    ws.column_dimensions['D'].width = 8
     ws.column_dimensions['E'].width = 12
+    ws.column_dimensions['F'].width = 12
 
     output = BytesIO()
     wb.save(output)
@@ -737,18 +866,14 @@ async def download_signer_template(
     ws['A1'].alignment = Alignment(horizontal='center')
 
     ws.merge_cells('A2:C2')
-    ws['A2'] = "说明：姓名和事务所为必填项，事务所需从下拉列表选择"
+    ws['A2'] = "说明：填写已启用执业人员的唯一登录账号；不要按姓名匹配"
     ws['A2'].font = ws['A2'].font.copy(color="808080")
     ws['A2'].alignment = Alignment(horizontal='center')
 
     # 表头
     ws.append(["", "", ""])  # 空行
-    ws.append(["姓名", "事务所", "状态（选填，默认启用）"])
+    ws.append(["执业账号", "事务所"])
     ws.row_dimensions[4].height = 20
-
-    # 示例数据
-    for i, firm in enumerate(firm_list[:2]):
-        ws.append([f"示例签字人{i+1}", firm, "启用"])
 
     # 数据验证 - 事务所下拉列表
     ws.row_dimensions[4].hidden = False
@@ -757,11 +882,6 @@ async def download_signer_template(
     dv.errorTitle = "无效的事务所"
     ws.add_data_validation(dv)
     dv.add(f"B5:B100")
-
-    # 状态列下拉列表
-    dv_status = DataValidation(type="list", formula1='"启用,禁用"', allow_blank=True)
-    ws.add_data_validation(dv_status)
-    dv_status.add(f"C5:C100")
 
     # 调整列宽
     ws.column_dimensions['A'].width = 20
@@ -829,11 +949,12 @@ async def list_projects(
 
     # 执业人员只能看自己参与的项目
     if current_user.role == models.UserRole.PRACTITIONER.value:
-        from sqlalchemy import or_
         query = query.filter(
             or_(
                 models.Project.leader_id == current_user.id,
-                models.Project.members.any(models.ProjectMember.user_id == current_user.id)
+                models.Project.members.any(models.ProjectMember.user_id == current_user.id),
+                models.Project.signer1.has(models.Signer.user_id == current_user.id),
+                models.Project.signer2.has(models.Signer.user_id == current_user.id),
             )
         )
 
@@ -868,6 +989,31 @@ async def list_projects(
         total=total,
         page=page,
         page_size=page_size
+    )
+
+
+@app.get("/api/projects/signed-by-me", response_model=schemas.ProjectListResponse)
+async def signed_projects(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if current_user.role != models.UserRole.PRACTITIONER.value:
+        raise HTTPException(status_code=403, detail="只有执业人员可查看签字项目")
+    query = db.query(models.Project).filter(
+        models.Project.is_deleted == False,
+        models.Project.fiscal_year == current_user.fiscal_year,
+        or_(
+            models.Project.signer1.has(models.Signer.user_id == current_user.id),
+            models.Project.signer2.has(models.Signer.user_id == current_user.id),
+        ),
+    )
+    return schemas.ProjectListResponse(
+        items=[schemas.ProjectResponse.from_orm(item) for item in query.order_by(
+            models.Project.created_at.desc(), models.Project.id.desc()
+        ).offset((page - 1) * page_size).limit(page_size).all()],
+        total=query.count(), page=page, page_size=page_size,
     )
 
 
@@ -915,25 +1061,8 @@ async def create_project(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # 验证签字人联动：签字人一和签字人二不能为同一人
-    if project_data.signer1_id and project_data.signer2_id:
-        if project_data.signer1_id == project_data.signer2_id:
-            raise HTTPException(status_code=400, detail="签字人一和签字人二不能为同一人")
-
-    # 验证签字人类型匹配事务所
-    if project_data.signer1_id:
-        signer1 = db.query(models.Signer).filter(models.Signer.id == project_data.signer1_id).first()
-        if signer1:
-            # 签字人绑定具体事务所，与项目事务所直接比较
-            if signer1.signer_type != project_data.firm:
-                raise HTTPException(status_code=400, detail="签字人事务所与项目事务所不匹配")
-
-    if project_data.signer2_id:
-        signer2 = db.query(models.Signer).filter(models.Signer.id == project_data.signer2_id).first()
-        if signer2:
-            # 签字人绑定具体事务所，与项目事务所直接比较
-            if signer2.signer_type != project_data.firm:
-                raise HTTPException(status_code=400, detail="签字人事务所与项目事务所不匹配")
+    validate_project_people(db, project_data.leader_id, project_data.member_ids or [])
+    validate_project_signers(db, (project_data.signer1_id, project_data.signer2_id), project_data.firm)
 
     # 生成项目ID（使用当前操作年度），带竞态条件保护
     project_id = generate_unique_project_no(db, fiscal_year)
@@ -1007,24 +1136,11 @@ async def update_project(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-    if signer1_id and signer2_id:
-        if signer1_id == signer2_id:
-            raise HTTPException(status_code=400, detail="签字人一和签字人二不能为同一人")
-
-    # 验证签字人类型匹配事务所
-    if signer1_id:
-        signer1 = db.query(models.Signer).filter(models.Signer.id == signer1_id).first()
-        if signer1:
-            # 签字人绑定具体事务所，与项目事务所直接比较
-            if signer1.signer_type != firm:
-                raise HTTPException(status_code=400, detail="签字人事务所与项目事务所不匹配")
-
-    if signer2_id:
-        signer2 = db.query(models.Signer).filter(models.Signer.id == signer2_id).first()
-        if signer2:
-            # 签字人绑定具体事务所，与项目事务所直接比较
-            if signer2.signer_type != firm:
-                raise HTTPException(status_code=400, detail="签字人事务所与项目事务所不匹配")
+    validate_project_signers(db, (signer1_id, signer2_id), firm, project)
+    validate_project_people(
+        db, update_data.get('leader_id', project.leader_id),
+        update_data.get('member_ids', [member.user_id for member in project.members]) or [], project,
+    )
 
     # 处理团队成员
     if 'member_ids' in update_data:

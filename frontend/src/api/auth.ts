@@ -65,6 +65,8 @@ export const projectApi = {
     year?: number
   }) => api.get<ProjectListResponse>('/projects', { params }),
 
+  signedByMe: (page = 1) => api.get<ProjectListResponse>('/projects/signed-by-me', { params: { page } }),
+
   get: (id: string | number) => api.get<Project>(`/projects/${id}`),
 
   create: (data: ProjectCreate) => api.post<Project>('/projects', data),

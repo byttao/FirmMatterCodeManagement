@@ -1,10 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
-import { signerApi } from '@/api/auth'
+import { signerApi, userApi } from '@/api/auth'
 import { useAuth } from '@/store/AuthContext'
 import { Navigate } from 'react-router-dom'
-import type { Signer, SignerCreate } from '@/types'
+import type { Signer, SignerCreate, Practitioner } from '@/types'
+import { getSignerDisplayName, getUserDisplayName, isSignerEligible } from '@/types'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -27,6 +27,7 @@ export default function SignerManagement() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [signers, setSigners] = useState<Signer[]>([])
+  const [practitioners, setPractitioners] = useState<Practitioner[]>([])
   const [firms, setFirms] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [showDialog, setShowDialog] = useState(false)
@@ -39,7 +40,7 @@ export default function SignerManagement() {
   const [importing, setImporting] = useState(false)
 
   const [formData, setFormData] = useState<SignerCreate>({
-    name: '',
+    user_id: 0,
     signer_type: '',
   })
 
@@ -47,14 +48,12 @@ export default function SignerManagement() {
   const canManage = user?.role === 'admin' || user?.role === 'admin_staff'
   const canDelete = user?.role === 'admin'  // 只有管理员可以删除
 
-  // 权限守卫：仅 admin 和 admin_staff 可访问（移到所有 Hooks 调用之后）
-  if (user?.role !== 'admin' && user?.role !== 'admin_staff') {
-    return <Navigate to="/projects" replace />
-  }
-
   useEffect(() => {
     loadFirms()
     loadSigners()
+    userApi.listPractitioners().then(res => setPractitioners(res.data)).catch(() => {
+      toast({ title: '加载执业人员失败', variant: 'destructive' })
+    })
   }, [filterFirm, showDisabled])
 
   const loadFirms = async () => {
@@ -82,19 +81,19 @@ export default function SignerManagement() {
 
   const openCreateDialog = () => {
     setEditingSigner(null)
-    setFormData({ name: '', signer_type: firms[0] || '' })
+    setFormData({ user_id: 0, signer_type: firms[0] || '' })
     setShowDialog(true)
   }
 
   const openEditDialog = (signer: Signer) => {
     setEditingSigner(signer)
-    setFormData({ name: signer.name, signer_type: signer.signer_type })
+    setFormData({ user_id: signer.user_id || 0, signer_type: signer.signer_type })
     setShowDialog(true)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!formData.name || !formData.signer_type) {
+    if (!formData.user_id || !formData.signer_type) {
       toast({ title: '请填写完整信息', variant: 'destructive' })
       return
     }
@@ -186,6 +185,9 @@ export default function SignerManagement() {
     try {
       const res = await signerApi.import(file)
       toast({ title: res.data.message })
+      if (res.data.errors?.length) {
+        toast({ title: res.data.errors[0], variant: 'destructive' })
+      }
       loadSigners()
       loadFirms()
     } catch (err: any) {
@@ -205,14 +207,7 @@ export default function SignerManagement() {
   }, {} as Record<string, Signer[]>)
 
   if (!canManage) {
-    return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold mb-4">签字人管理</h1>
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-          <p className="text-yellow-800">您没有权限访问签字人管理功能</p>
-        </div>
-      </div>
-    )
+    return <Navigate to="/projects" replace />
   }
 
   return (
@@ -220,7 +215,7 @@ export default function SignerManagement() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">签字人管理</h1>
-          <p className="text-muted-foreground">管理已配置事务所的签字人信息</p>
+          <p className="text-muted-foreground">签字人须关联执业人员账号；旧记录需人工确认</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleExport}>
@@ -276,7 +271,7 @@ export default function SignerManagement() {
         <div className="flex gap-2 ml-auto">
           {firms.map(firm => (
             <Badge key={firm} variant="outline">
-              {firm}: {signers.filter(s => s.signer_type === firm && s.is_active).length}人
+              {firm}: {signers.filter(s => s.signer_type === firm && s.is_active).length}条
               {signers.filter(s => s.signer_type === firm && !s.is_active).length > 0 && (
                 <span className="text-orange-500 ml-1">
                   ({signers.filter(s => s.signer_type === firm && !s.is_active).length}已禁用)
@@ -304,7 +299,7 @@ export default function SignerManagement() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[80px]">ID</TableHead>
-                  <TableHead>姓名</TableHead>
+                  <TableHead>签字人（账号）</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>新增日期</TableHead>
                   <TableHead>禁用日期</TableHead>
@@ -315,10 +310,10 @@ export default function SignerManagement() {
                 {firmSigners.map(signer => (
                   <TableRow key={signer.id} className={!signer.is_active ? 'opacity-60' : ''}>
                     <TableCell className="font-medium">{signer.id}</TableCell>
-                    <TableCell>{signer.name}</TableCell>
+                    <TableCell>{getSignerDisplayName(signer)}</TableCell>
                     <TableCell>
-                      <Badge variant={signer.is_active ? 'default' : 'secondary'}>
-                        {signer.is_active ? '启用' : '禁用'}
+                      <Badge variant={!signer.user_id ? 'outline' : isSignerEligible(signer) ? 'default' : 'secondary'}>
+                        {!signer.user_id ? '待关联' : !signer.is_active ? '禁用' : !signer.user?.is_active || signer.user.role !== 'practitioner' ? '账号不可用' : '启用'}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
@@ -333,7 +328,7 @@ export default function SignerManagement() {
                           variant="ghost"
                           size="sm"
                           onClick={() => openEditDialog(signer)}
-                          title="编辑"
+                          title={signer.user_id ? '编辑事务所' : '关联执业账号'}
                         >
                           <Edit className="w-4 h-4" />
                         </Button>
@@ -341,6 +336,7 @@ export default function SignerManagement() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDisable(signer)}
+                          disabled={!signer.user_id && !signer.is_active}
                           title={signer.is_active ? '禁用' : '启用'}
                         >
                           {signer.is_active ? (
@@ -374,22 +370,32 @@ export default function SignerManagement() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {editingSigner ? '编辑签字人' : '添加签字人'}
+              {editingSigner ? (editingSigner.user_id ? '编辑签字人' : '关联旧签字人') : '添加签字人'}
             </DialogTitle>
             <DialogDescription>
-              {editingSigner ? '修改签字人信息' : '添加新的签字人'}
+              {editingSigner?.user_id ? '已关联账号不能改绑；历史签字姓名会保留' : '请选择唯一的执业人员账号'}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="name">姓名</Label>
-              <Input
-                id="name"
-                value={formData.name}
-                onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                placeholder="输入签字人姓名"
-                required
-              />
+              <Label>执业人员账号</Label>
+              {editingSigner?.user_id ? (
+                <div className="rounded-md border px-3 py-2 text-sm">
+                  {editingSigner.user ? getUserDisplayName(editingSigner.user) : `账号 ID ${editingSigner.user_id}`}
+                </div>
+              ) : <Select
+                value={formData.user_id ? String(formData.user_id) : ''}
+                onValueChange={value => setFormData(prev => ({ ...prev, user_id: Number(value) }))}
+              >
+                <SelectTrigger><SelectValue placeholder="选择执业人员" /></SelectTrigger>
+                <SelectContent>
+                  {practitioners.map(person => (
+                    <SelectItem key={person.id} value={String(person.id)}>
+                      {getUserDisplayName(person)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>}
             </div>
             <div className="space-y-2">
               <Label htmlFor="signer_type">事务所</Label>

@@ -338,14 +338,16 @@ export default function ProjectList() {
                       >
                         <Eye className="w-4 h-4" />
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => navigate(`/projects/${project.project_id}/edit`)}
-                        title="编辑"
-                      >
-                        <Edit className="w-4 h-4" />
-                      </Button>
+                      {(user?.role === 'admin' || (user?.role === 'practitioner' && project.leader_id === user.id)) && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => navigate(`/projects/${project.project_id}/edit`)}
+                          title="编辑"
+                        >
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                      )}
                       {canRecycleNo && project.report_no && (
                         <Button
                           variant="ghost"

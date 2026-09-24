@@ -16,6 +16,7 @@ export interface Practitioner {
   username: string
   real_name: string
   role: string
+  is_active?: boolean
 }
 
 // 签字人类型
@@ -23,15 +24,23 @@ export interface Signer {
   id: number
   name: string
   signer_type: string  // 关联的事务所名称
+  user_id: number | null
+  user: Practitioner | null
   is_active: boolean
   disabled_at: string | null
   created_at: string
 }
 
 export interface SignerCreate {
-  name: string
+  user_id: number
   signer_type: string
 }
+
+export const getSignerDisplayName = (signer: Signer) =>
+  signer.user ? `${signer.name} (${signer.user.username})` : `${signer.name} (待关联)`
+
+export const isSignerEligible = (signer: Signer) =>
+  !!signer.user_id && !!signer.user?.is_active && signer.user.role === 'practitioner' && signer.is_active
 
 export interface LoginRequest {
   username: string
@@ -110,8 +119,8 @@ export interface ProjectCreate {
   scale?: string
   business_source?: string
   contract_amount?: number
-  signer1_id?: number
-  signer2_id?: number
+  signer1_id?: number | null
+  signer2_id?: number | null
 }
 
 export interface ProjectUpdate {
@@ -129,8 +138,8 @@ export interface ProjectUpdate {
   scale?: string
   business_source?: string
   contract_amount?: number
-  signer1_id?: number
-  signer2_id?: number
+  signer1_id?: number | null
+  signer2_id?: number | null
 }
 
 export type FinanceKind = 'invoices' | 'receipts'
