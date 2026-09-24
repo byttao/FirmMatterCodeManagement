@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import sys
@@ -24,6 +25,7 @@ import tarfile
 import tempfile
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
+from urllib.parse import unquote
 from urllib.request import Request, urlopen
 
 
@@ -32,10 +34,10 @@ PRESERVED_PATHS = {
     ".git",
     ".env",
     ".venv",
+    ".workbuddy",
     "backend/data",
     "backend/static",
     "local-archive",
-    "upgrade.py",
 }
 
 
@@ -48,10 +50,9 @@ def read_version(root: Path) -> str:
 
 def version_key(version: str) -> tuple[int, ...]:
     value = version.removeprefix("v")
-    try:
-        return tuple(int(part) for part in value.split("."))
-    except ValueError as exc:
-        raise ValueError(f"无法识别版本号：{version}") from exc
+    if not re.fullmatch(r"\d+\.\d+\.\d+", value):
+        raise ValueError(f"无法识别版本号：{version}")
+    return tuple(int(part) for part in value.split("."))
 
 
 def github_json(url: str) -> dict:
@@ -64,7 +65,10 @@ def github_json(url: str) -> dict:
 
 
 def latest_release(repository: str, target: str | None) -> tuple[str, str]:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("GitHub 仓库格式应为 owner/name")
     if target:
+        version_key(target)
         tag = target if target.startswith("v") else f"v{target}"
         return tag, f"https://github.com/{repository}/archive/refs/tags/{tag}.tar.gz"
     release = github_json(f"https://api.github.com/repos/{repository}/releases/latest")
@@ -75,16 +79,24 @@ def latest_release(repository: str, target: str | None) -> tuple[str, str]:
     return tag, archive
 
 
-def backup_database(root: Path) -> Path | None:
+def backup_database(root: Path) -> Path:
     data_dir = Path(os.getenv("FIRM_MANAGER_DATA_DIR", root / "backend" / "data"))
-    database = Path(os.getenv("FIRM_MANAGER_DATABASE_URL", "").removeprefix("sqlite:///")) if os.getenv("FIRM_MANAGER_DATABASE_URL") else data_dir / "db.sqlite"
-    if not database.exists():
-        return None
+    database_url = os.getenv("FIRM_MANAGER_DATABASE_URL")
+    if database_url:
+        if not database_url.startswith("sqlite:///"):
+            raise RuntimeError("自动升级只支持 SQLite 数据库连接串")
+        database = Path(unquote(database_url.removeprefix("sqlite:///").split("?", 1)[0]))
+    else:
+        database = data_dir / "db.sqlite"
+    if not database.is_absolute():
+        raise RuntimeError("升级时数据库路径必须是绝对路径，请检查 FIRM_MANAGER_DATA_DIR 或 FIRM_MANAGER_DATABASE_URL")
+    if not database.is_file():
+        raise RuntimeError(f"找不到运行数据库：{database}；请核对数据目录后再升级")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     backup = database.with_name(f"{database.stem}-before-code-upgrade-{stamp}{database.suffix}")
     database.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with sqlite3.connect(database) as source, sqlite3.connect(backup) as target:
+        with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as source, sqlite3.connect(backup) as target:
             source.backup(target)
             if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError("升级前数据库备份完整性检查失败")
@@ -97,36 +109,82 @@ def backup_database(root: Path) -> Path | None:
 
 def is_preserved(relative: Path) -> bool:
     value = relative.as_posix()
-    return any(value == item or value.startswith(f"{item}/") for item in PRESERVED_PATHS)
+    return (any(value == item or value.startswith(f"{item}/") for item in PRESERVED_PATHS)
+            or (relative.name.startswith(".env") and relative.name != ".env.example")
+            or relative.name == "jwt_secret" or relative.suffix in {".db", ".sqlite", ".sqlite3"})
 
 
-def install_archive(root: Path, archive_path: Path) -> None:
+def install_archive(root: Path, archive_path: Path, target_version: str) -> Path:
     with tempfile.TemporaryDirectory(prefix="firm-manager-release-") as temp_dir:
-        extraction = Path(temp_dir) / "source"
+        extraction = (Path(temp_dir) / "source").resolve()
         extraction.mkdir()
         with tarfile.open(archive_path, "r:gz") as archive:
-            # Python 3.11 has no extractall(filter=...), so validate members
-            # before extraction and keep the updater compatible with the
-            # documented Python version.
-            for member in archive.getmembers():
+            members = archive.getmembers()
+            for member in members:
                 destination = (extraction / member.name).resolve()
-                if extraction not in destination.parents and destination != extraction:
-                    raise RuntimeError("Release 压缩包包含非法路径")
-            archive.extractall(extraction)
+                if (extraction not in destination.parents and destination != extraction
+                        or not (member.isfile() or member.isdir())):
+                    raise RuntimeError(f"Release 压缩包包含非法路径：{member.name}")
+            for member in members:
+                destination = extraction / member.name
+                if member.isdir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                else:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.extractfile(member) as source_file, destination.open("wb") as output:
+                        shutil.copyfileobj(source_file, output)
         roots = [path for path in extraction.iterdir() if path.is_dir()]
-        if len(roots) != 1 or not (roots[0] / "backend" / "main.py").exists():
+        if len(roots) != 1 or not (roots[0] / "backend" / "main.py").is_file():
             raise RuntimeError("下载的 Release 不是有效的系统源码包")
         source = roots[0]
-        for path in source.rglob("*"):
-            relative = path.relative_to(source)
-            if is_preserved(relative):
-                continue
-            destination = root / relative
-            if path.is_dir():
-                destination.mkdir(parents=True, exist_ok=True)
-            else:
+        if read_version(source) != target_version:
+            raise RuntimeError("Release 压缩包版本与目标版本不一致")
+        package = source / "frontend" / "package.json"
+        try:
+            package_version = json.loads(package.read_text(encoding="utf-8")).get("version")
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("Release 缺少有效的前端版本信息") from exc
+        if package_version != target_version:
+            raise RuntimeError("Release 前端版本与目标版本不一致")
+
+        files = [path for path in source.rglob("*") if path.is_file() and not is_preserved(path.relative_to(source))]
+        files.sort(key=lambda path: (path.relative_to(source) == Path("VERSION"), path.relative_to(source).as_posix()))
+        backup = backup_database(root)
+        originals = Path(temp_dir) / "originals"
+        replaced: list[tuple[Path, Path | None]] = []
+        try:
+            for path in files:
+                relative = path.relative_to(source)
+                destination = root / relative
+                if not destination.parent.resolve().is_relative_to(root.resolve()):
+                    raise RuntimeError(f"安装路径超出程序目录：{relative}")
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, destination)
+                original = originals / relative if destination.exists() else None
+                if original:
+                    original.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(destination, original)
+                with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".upgrade-", delete=False) as staged:
+                    staged_path = Path(staged.name)
+                try:
+                    shutil.copy2(path, staged_path)
+                    os.replace(staged_path, destination)
+                finally:
+                    staged_path.unlink(missing_ok=True)
+                replaced.append((destination, original))
+        except Exception as exc:
+            restore_errors = []
+            for destination, original in reversed(replaced):
+                try:
+                    if original:
+                        os.replace(original, destination)
+                    else:
+                        destination.unlink(missing_ok=True)
+                except OSError as restore_exc:
+                    restore_errors.append(f"{destination}: {restore_exc}")
+            if restore_errors:
+                raise RuntimeError(f"程序更新失败，自动恢复也未完成：{'; '.join(restore_errors)}；数据库备份：{backup}") from exc
+            raise RuntimeError(f"程序更新失败，已恢复原程序文件；数据库备份：{backup}") from exc
+        return backup
 
 
 def download(url: str, destination: Path) -> None:
@@ -152,21 +210,21 @@ def main() -> int:
     target = tag.removeprefix("v")
     print(f"当前版本：v{current}")
     print(f"目标版本：v{target}")
-    if version_key(target) <= version_key(current) and not args.target:
+    if version_key(target) < version_key(current):
+        raise RuntimeError("目标版本低于当前版本，禁止降级；旧程序可能无法读取新数据库")
+    if version_key(target) == version_key(current):
         print("已是最新版本，无需升级。")
         return 0
     if not args.apply:
         print("这是检查模式；确认停掉后端后，使用 --apply 执行升级。")
         return 0
 
-    backup = backup_database(root)
-    if backup:
-        print(f"数据库备份：{backup}")
     with tempfile.TemporaryDirectory(prefix="firm-manager-download-") as temp_dir:
         archive = Path(temp_dir) / "release.tar.gz"
         print(f"下载 Release：{tag}")
         download(archive_url, archive)
-        install_archive(root, archive)
+        backup = install_archive(root, archive, target)
+    print(f"数据库备份：{backup}")
     print("程序文件已更新。请启动后端，系统会自动执行数据库迁移；确认登录和数据无误后再删除备份。")
     return 0
 
