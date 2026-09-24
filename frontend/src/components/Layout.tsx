@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LayoutDashboard, Briefcase, Users, LogOut, Menu, X, Calendar, PenLine, Settings } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
-const APP_VERSION = '0.1.8'
+const APP_VERSION = '0.1.12'
 
 export default function Layout() {
   const navigate = useNavigate()
