@@ -22,11 +22,7 @@ import { Plus, Edit, Trash2, Loader2, RotateCcw, Search, X } from 'lucide-react'
 
 export default function UserManagement() {
   const { user } = useAuth()
-
-  // 权限守卫：仅 admin 可访问
-  if (user?.role !== 'admin') {
-    return <Navigate to="/projects" replace />
-  }
+  const canManage = user?.role === 'admin'
 
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
@@ -46,8 +42,12 @@ export default function UserManagement() {
   })
 
   useEffect(() => {
+    if (!canManage) {
+      setLoading(false)
+      return
+    }
     loadUsers()
-  }, [showDeleted])
+  }, [showDeleted, canManage])
 
   const loadUsers = async () => {
     setLoading(true)
@@ -128,6 +128,11 @@ export default function UserManagement() {
       u.real_name.toLowerCase().includes(query)
     )
   })
+
+  // 权限守卫放在所有 Hooks 之后，避免用户状态加载过程中改变 Hooks 顺序。
+  if (!canManage) {
+    return <Navigate to="/projects" replace />
+  }
 
   return (
     <div className="space-y-4">

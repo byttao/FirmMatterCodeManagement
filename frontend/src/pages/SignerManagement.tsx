@@ -50,12 +50,16 @@ export default function SignerManagement() {
   const canDelete = user?.role === 'admin'  // 只有管理员可以删除
 
   useEffect(() => {
+    if (!canManage) {
+      setLoading(false)
+      return
+    }
     loadFirms()
     loadSigners()
     userApi.listPractitioners().then(res => setPractitioners(res.data)).catch(() => {
       toast({ title: '加载执业人员失败', variant: 'destructive' })
     })
-  }, [filterFirm, showDisabled])
+  }, [filterFirm, showDisabled, canManage])
 
   const loadFirms = async () => {
     try {
