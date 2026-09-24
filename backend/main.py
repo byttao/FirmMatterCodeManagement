@@ -35,7 +35,7 @@ from report_no_generator import (
 
 upgrade_database(engine)
 
-app = FastAPI(title="事务所项目编号管理系统", version="0.1.6")
+app = FastAPI(title="事务所项目编号管理系统", version="0.1.7")
 
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]
@@ -1129,6 +1129,12 @@ async def update_project(
     update_data = project_data.dict(exclude_unset=True)
     if update_data and not can_edit_project(current_user, project):
         raise HTTPException(status_code=403, detail="无权限编辑此项目")
+
+    if project.report_no and any(
+        field in update_data and update_data[field] != getattr(project, field)
+        for field in ("firm", "report_type", "report_year")
+    ):
+        raise HTTPException(status_code=400, detail="已有编号的项目不能修改事务所、业务类型或业务年度")
 
     if 'report_year' in update_data and (
         update_data['report_year'] is None or update_data['report_year'] > project.fiscal_year

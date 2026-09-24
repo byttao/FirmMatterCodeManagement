@@ -49,11 +49,11 @@ export default function ProjectList() {
   const { user, fiscalYear } = useAuth()
 
   const canCreateProject = user?.role !== 'admin_staff'
-  const canRecycleNo = user?.role === 'admin' || user?.role === 'admin_staff'
+  const canRecycleNo = user?.role === 'admin'
 
   // 判断用户是否可以删除某个项目
   const canDeleteThisProject = (project: Project) => {
-    if (user?.role === 'admin' || user?.role === 'admin_staff') {
+    if (user?.role === 'admin') {
       return true
     }
     // 执业人员：只能删除自己负责且未编号的项目

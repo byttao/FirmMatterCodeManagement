@@ -126,10 +126,10 @@ def can_edit_project(user: models.User, project: models.Project) -> bool:
 
 def can_delete_project(user: models.User, project: Optional[models.Project] = None) -> bool:
     """检查用户是否可以删除项目
-    - admin/admin_staff：始终可以删除
+    - admin：可以删除
     - practitioner：只能删除未编号的项目（且必须是自己的项目）
     """
-    if user.role in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if user.role == models.UserRole.ADMIN.value:
         return True
     if user.role == models.UserRole.PRACTITIONER.value:
         # 执业人员只能删除自己负责且未编号的项目

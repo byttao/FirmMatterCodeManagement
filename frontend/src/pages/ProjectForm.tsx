@@ -346,7 +346,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
   }
 
   const canGenerateNo = project?.report_no_status === 'pending' || project?.report_no_status === 'recycled' || !project
-  const canEditReportYear = !project || project.report_no_status === 'pending'
+  const canEditReportYear = !project?.report_no
 
   // 已选中的团队成员详情
   const selectedMembers = useMemo(() => {
@@ -476,7 +476,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
                 <Select
                   value={formData.firm}
                   onValueChange={(v) => handleInputChange('firm', v)}
-                  disabled={isFieldDisabled}
+                  disabled={isFieldDisabled || !!project?.report_no}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="选择事务所" />
@@ -497,7 +497,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
                 <Select
                   value={formData.report_type}
                   onValueChange={(v) => handleInputChange('report_type', v)}
-                  disabled={isFieldDisabled || !formData.firm}
+                  disabled={isFieldDisabled || !!project?.report_no || !formData.firm}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="选择类型" />

@@ -160,7 +160,9 @@ class ProjectBase(BaseModel):
 class ProjectCreate(ProjectBase):
     leader_id: int
     member_ids: Optional[List[int]] = []
-    report_no: Optional[str] = None  # 可选，用于编辑时传入
+
+    class Config:
+        extra = "forbid"
 
 
 class ProjectUpdate(BaseModel):

@@ -174,6 +174,11 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                         "username": "auditor", "password": "another-password", "real_name": "执业人员", "role": "practitioner",
                     })
                     self.assertEqual(practitioner.status_code, 200, practitioner.text)
+                    self.assertEqual((await client.post("/api/projects", headers=auth, json={
+                        "firm": "Example Firm", "report_type": "Audit", "report_year": 2026,
+                        "customer_name": "Manual Number", "leader_id": practitioner.json()["id"],
+                        "report_no": "MANUAL-001",
+                    })).status_code, 422)
                     project = await client.post("/api/projects", headers=auth, json={
                         "firm": "Example Firm", "report_type": "Audit", "report_year": 2026,
                         "customer_name": "Sample Client", "leader_id": practitioner.json()["id"],
@@ -201,6 +206,15 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     first = await client.post(f"/api/projects/{project_id}/generate-report-no", headers=auth)
                     self.assertEqual(first.status_code, 200, first.text)
                     self.assertEqual(first.json()["report_no"], "EX-2026-001")
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
+                        "firm": "Another Firm", "report_type": "Other Audit",
+                    })).status_code, 400)
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
+                        "report_year": 2025,
+                    })).status_code, 400)
+                    self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
+                        "firm": "Example Firm", "report_type": "Audit", "report_year": 2026,
+                    })).status_code, 200)
                     self.assertEqual((await client.put(f"/api/numbered-years/rules/{first_rule_id}", headers=auth, json={
                         "template": "CHANGED-{yyyy}-{nnn}",
                     })).status_code, 400)
@@ -332,6 +346,12 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=staff_auth, json={
                         "member_ids": [staff.json()["id"]],
                     })).status_code, 403)
+                    self.assertEqual((await client.delete(
+                        f"/api/projects/{project_id}", headers=staff_auth
+                    )).status_code, 403)
+                    self.assertEqual((await client.post(
+                        f"/api/projects/{project_id}/recycle-report-no", headers=staff_auth
+                    )).status_code, 403)
                     self.assertEqual((await client.put(f"/api/projects/{project_id}", headers=auth, json={
                         "report_year": 2027,
                     })).status_code, 400)
