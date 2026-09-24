@@ -38,7 +38,7 @@ Base.metadata.create_all(bind=engine)
 migrate_signer_accounts(engine)
 migrate_legacy_finance()
 
-app = FastAPI(title="事务所项目编号管理系统", version="0.1.4")
+app = FastAPI(title="事务所项目编号管理系统", version="0.1.5")
 
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]
@@ -514,6 +514,13 @@ def validate_project_signers(db: Session, signer_ids: tuple[Optional[int], Optio
         raise HTTPException(status_code=400, detail="两名签字人不能是同一执业人员")
 
 
+def append_export_row(sheet, values):
+    sheet.append(values)
+    for cell in sheet[sheet.max_row]:
+        if cell.data_type == "f":
+            cell.data_type = "s"
+
+
 @app.get("/api/signers", response_model=list[schemas.SignerResponse])
 async def list_signers(
     signer_type: Optional[str] = None,
@@ -810,11 +817,11 @@ async def export_signers(
 
     # 表头
     headers = ["姓名", "执业账号", "事务所", "状态", "新增日期", "禁用日期"]
-    ws.append(headers)
+    append_export_row(ws, headers)
 
     # 数据
     for s in signers:
-        ws.append([
+        append_export_row(ws, [
             s.name,
             s.user.username if s.user else "未关联",
             s.signer_type,
@@ -1443,11 +1450,12 @@ async def get_dashboard(
 
     # 执业人员只能看自己的项目
     if current_user.role == models.UserRole.PRACTITIONER.value:
-        from sqlalchemy import or_
         query = query.filter(
             or_(
                 models.Project.leader_id == current_user.id,
-                models.Project.members.any(models.ProjectMember.user_id == current_user.id)
+                models.Project.members.any(models.ProjectMember.user_id == current_user.id),
+                models.Project.signer1.has(models.Signer.user_id == current_user.id),
+                models.Project.signer2.has(models.Signer.user_id == current_user.id),
             )
         )
 
@@ -1931,15 +1939,16 @@ async def export_projects(
         "客户名称", "合同号", "下单时间", "执业负责人", "团队成员",
         "项目状态", "项目阶段", "优先级", "项目规模", "业务来源",
         "合同金额", "开票金额", "开票时间", "收款金额", "收款时间",
-        "未开票金额", "未收款金额", "签字人一", "签字人二", "创建时间"
+        "未开票金额", "未收款金额", "签字人一", "签字人一账号",
+        "签字人二", "签字人二账号", "创建时间"
     ]
-    ws.append(headers)
+    append_export_row(ws, headers)
 
     # 数据
     for p in projects:
         try:
             members = ", ".join([m.user.real_name for m in p.members if m.user])
-            ws.append([
+            append_export_row(ws, [
                 p.project_id, p.firm, p.report_type, p.report_year, p.report_no or "",
                 p.report_no_status, p.customer_name, p.contract_no or "",
                 p.order_date.strftime("%Y-%m-%d") if p.order_date else "",
@@ -1950,12 +1959,15 @@ async def export_projects(
                 p.received_amount,
                 p.receive_date.strftime("%Y-%m-%d") if p.receive_date else "",
                 p.uninvoiced_amount, p.unreceived_amount,
-                p.signer1.name if p.signer1 else "", p.signer2.name if p.signer2 else "",
+                p.signer1.name if p.signer1 else "",
+                p.signer1.user.username if p.signer1 and p.signer1.user else "",
+                p.signer2.name if p.signer2 else "",
+                p.signer2.user.username if p.signer2 and p.signer2.user else "",
                 p.created_at.strftime("%Y-%m-%d %H:%M")
             ])
         except Exception as e:
             # 跳过有问题的项目，记录错误
-            ws.append([p.project_id, f"导出错误: {str(e)}"])
+            append_export_row(ws, [p.project_id, f"导出错误: {str(e)}"])
 
     # 保存到BytesIO
     output = BytesIO()

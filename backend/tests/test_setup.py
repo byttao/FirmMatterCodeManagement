@@ -7,8 +7,10 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from io import BytesIO
 
 import httpx
+from openpyxl import Workbook, load_workbook
 
 
 class FirstRunTest(unittest.IsolatedAsyncioTestCase):
@@ -301,6 +303,11 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(second_signer.status_code, 200, second_signer.text)
                     self.assertEqual(first_signer.json()["name"], second_signer.json()["name"])
                     self.assertNotEqual(first_signer.json()["user"]["username"], second_signer.json()["user"]["username"])
+                    signer_export = await client.get("/api/signers/export", headers=auth)
+                    self.assertEqual(signer_export.status_code, 200, signer_export.text)
+                    signer_sheet = load_workbook(BytesIO(signer_export.content), data_only=False).active
+                    self.assertEqual({row[1] for row in signer_sheet.iter_rows(min_row=2, values_only=True)},
+                                     {"auditor", "other_auditor"})
                     self.assertEqual((await client.post("/api/signers", headers=auth, json={
                         "user_id": staff.json()["id"], "signer_type": "Example Firm",
                     })).status_code, 400)
@@ -309,7 +316,7 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     })).status_code, 400)
 
                     signed = await client.post("/api/projects", headers=auth, json={
-                        **new_project, "customer_name": "Signed Client",
+                        **new_project, "customer_name": "=1+1",
                         "signer1_id": second_signer.json()["id"],
                     })
                     self.assertEqual(signed.status_code, 200, signed.text)
@@ -318,6 +325,17 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     mine = await client.get("/api/projects/signed-by-me", headers=other_auth)
                     self.assertEqual(mine.status_code, 200, mine.text)
                     self.assertEqual([item["project_id"] for item in mine.json()["items"]], [signed_id])
+                    dashboard = await client.get("/api/dashboard", headers=other_auth)
+                    self.assertEqual(dashboard.status_code, 200, dashboard.text)
+                    self.assertEqual(dashboard.json()["total_projects"], 1)
+                    exported = await client.get("/api/export/projects", headers=auth)
+                    self.assertEqual(exported.status_code, 200, exported.text)
+                    sheet = load_workbook(BytesIO(exported.content), data_only=False).active
+                    columns = {cell.value: index for index, cell in enumerate(sheet[1])}
+                    exported_row = next(row for row in sheet.iter_rows(min_row=2) if row[0].value == signed_id)
+                    self.assertEqual(exported_row[columns["签字人一账号"]].value, "other_auditor")
+                    self.assertEqual(exported_row[columns["客户名称"]].value, "=1+1")
+                    self.assertEqual(exported_row[columns["客户名称"]].data_type, "s")
                     self.assertEqual((await client.get("/api/projects/signed-by-me", headers=staff_auth)).status_code, 403)
                     self.assertIn(signed_id, [item["project_id"] for item in (
                         await client.get("/api/projects", headers=other_auth)
@@ -366,8 +384,6 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                         "username": "fourth_auditor", "password": "another-password",
                         "real_name": "执业人员", "role": "practitioner",
                     })
-                    from io import BytesIO
-                    from openpyxl import Workbook
                     workbook = Workbook()
                     workbook.active.append(["执业账号", "事务所"])
                     workbook.active.append(["fourth_auditor", "Example Firm"])
