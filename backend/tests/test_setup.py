@@ -471,6 +471,18 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     mine = await client.get("/api/projects/signed-by-me", headers=other_auth)
                     self.assertEqual(mine.status_code, 200, mine.text)
                     self.assertEqual([item["project_id"] for item in mine.json()["items"]], [signed_id])
+                    self.assertEqual((await client.put(
+                        "/api/users/current-fiscal-year", headers=other_auth, json={"fiscal_year": 2010}
+                    )).status_code, 200)
+                    self.assertEqual((await client.get(
+                        "/api/projects/signed-by-me", headers=other_auth
+                    )).json()["items"], [])
+                    self.assertEqual((await client.put(
+                        "/api/users/current-fiscal-year", headers=other_auth, json={"fiscal_year": 2026}
+                    )).status_code, 200)
+                    self.assertEqual([item["project_id"] for item in (await client.get(
+                        "/api/projects/signed-by-me", headers=other_auth
+                    )).json()["items"]], [signed_id])
                     dashboard = await client.get("/api/dashboard", headers=other_auth)
                     self.assertEqual(dashboard.status_code, 200, dashboard.text)
                     self.assertEqual(dashboard.json()["total_projects"], 1)
