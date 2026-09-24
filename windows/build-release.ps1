@@ -15,7 +15,8 @@ New-Item -ItemType Directory -Force $packageDir, $prerequisitesDir | Out-Null
 python -m PyInstaller --noconfirm --clean --onefile --name BackendServer `
   --paths backend --paths windows `
   --add-data "frontend/dist;static" --add-data "VERSION;." `
-  --collect-all pypinyin --collect-all openpyxl --collect-submodules uvicorn `
+  --collect-all pypinyin --collect-all openpyxl `
+  --collect-submodules uvicorn --collect-submodules passlib.handlers `
   windows/server_entry.py
 if ($LASTEXITCODE -ne 0) { throw "BackendServer.exe 构建失败" }
 
