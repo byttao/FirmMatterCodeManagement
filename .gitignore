@@ -1,0 +1,54 @@
+# 本地运行数据与敏感信息
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/jwt_secret
+backend/*.db
+*.sqlite
+*.sqlite3
+*.db
+
+# 构建、依赖和缓存
+frontend/node_modules/
+frontend/dist/
+backend/__pycache__/
+frontend/.vite/
+.venv/
+backend/static/
+*.pyc
+.DS_Store
+
+# 本地日志和调试产物
+*.log
+*_out.txt
+*_output.txt
+debug_*
+test_*.png
+error-debug.png
+
+# Workbuddy 私有记忆和本地配置
+.workbuddy/
+安装包/
+
+# 旧版本机辅助脚本和构建日志（保留在本地，不作为发布源码）
+add_import_export.py
+check_build.ps1
+generate_icon.py
+start_backend.py
+test_automated.py
+test_full.py
+test_user_mgmt.py
+vite_*.txt
+tsc_output.txt
+package-lock.json
+!frontend/package-lock.json
+backend/test_api3.py
+backend/migrate_to_numbered_years.py
+启动.bat
+启动.ps1
+统一启动.py
+部署前端.bat
+
+# 本地环境文件
+.env
+.env.*
+!.env.example
