@@ -9,11 +9,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 const currentYear = new Date().getFullYear()
 
-const newReportType = () => ({ report_type: '', template: '{yyyy}-{nnn}', rule_name: '' })
+const newReportType = (template = '') => ({ report_type: '', template, rule_name: '' })
 
-const newFirm = (): SetupFirm => ({
+const newFirm = (first = false): SetupFirm => ({
   name: '',
-  report_types: [newReportType()],
+  report_types: [newReportType(first ? '{yyyy}-{nnn}' : '')],
 })
 
 export default function SetupWizard() {
@@ -23,7 +23,7 @@ export default function SetupWizard() {
     admin_password: '',
     admin_real_name: '',
     fiscal_year: currentYear,
-    firms: [newFirm()],
+    firms: [newFirm(true)],
   })
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
@@ -74,6 +74,15 @@ export default function SetupWizard() {
       return !report.template.includes('{yyyy}') || sequenceMatches.length !== 1
     }))) {
       setError('编号模板必须包含 {yyyy}，并且只能包含一个序号占位符，例如 {nnn}')
+      return
+    }
+    const formats = form.firms.flatMap(firm => firm.report_types.map(report =>
+      report.template.replace(/\{yyyy\}/g, String(form.fiscal_year))
+        .replace(/\{yy\}/g, String(form.fiscal_year).slice(-2))
+        .replace(/\{n{1,10}\}/g, '{sequence}')
+    ))
+    if (new Set(formats).size !== formats.length) {
+      setError('存在重复编号格式，请为不同业务规则设置不同模板')
       return
     }
 
@@ -147,7 +156,7 @@ export default function SetupWizard() {
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">3. 配置事务所和编号规则</CardTitle>
-              <CardDescription>事务所名称和编号格式由贵所自行填写，示例中的内容不会被写入系统。</CardDescription>
+              <CardDescription>事务所名称和编号格式由贵所自行填写；同一年度的不同规则须使用不同的完整编号格式。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
               {form.firms.map((firm, firmIndex) => (

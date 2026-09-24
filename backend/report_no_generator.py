@@ -40,6 +40,7 @@ def get_rule(db: Session, firm: str, report_type: str, year: int) -> "models.Rep
 
     rule = db.query(models.ReportNumberRule).filter(
         models.ReportNumberRule.id == rt.rule_id,
+        models.ReportNumberRule.fiscal_year_firm_id == fy_firm.id,
         models.ReportNumberRule.is_active == True
     ).first()
     if not rule:

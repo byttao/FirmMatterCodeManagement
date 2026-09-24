@@ -43,6 +43,16 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     })
                     self.assertEqual(invalid.status_code, 400)
                     self.assertEqual((await client.get("/api/setup/status")).json(), {"initialized": False})
+                    duplicate_formats = await client.post("/api/setup", json={
+                        **setup,
+                        "firms": [
+                            setup["firms"][0],
+                            {"name": "Another Firm", "report_types": [
+                                {"report_type": "Other Audit", "template": "EX-{yyyy}-{nnnn}"},
+                            ]},
+                        ],
+                    })
+                    self.assertEqual(duplicate_formats.status_code, 400)
 
                     remote_transport = httpx.ASGITransport(app=app, client=("192.0.2.1", 12345))
                     async with httpx.AsyncClient(transport=remote_transport, base_url="http://testserver") as remote:
@@ -59,6 +69,70 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
                     years = await client.get("/api/numbered-years", headers=auth)
                     self.assertEqual(years.json()[0]["firms"][0]["rules"][0]["template"], "EX-{yyyy}-{nnn}")
+                    configured_year = years.json()[0]
+                    first_firm = configured_year["firms"][0]
+                    first_rule_id = first_firm["rules"][0]["id"]
+                    first_type_id = first_firm["report_types"][0]["id"]
+
+                    self.assertEqual((await client.put("/api/users/current-fiscal-year", headers=auth, json={
+                        "fiscal_year": 2027,
+                    })).status_code, 400)
+                    second_firm = await client.post("/api/numbered-years/firms", headers=auth, json={
+                        "fiscal_year_id": configured_year["id"], "firm": "Another Firm",
+                    })
+                    self.assertEqual(second_firm.status_code, 200, second_firm.text)
+                    second_firm_id = second_firm.json()["id"]
+                    self.assertEqual((await client.post("/api/numbered-years/rules", headers=auth, json={
+                        "fiscal_year_firm_id": second_firm_id, "rule_name": "Duplicate",
+                        "template": "EX-{yyyy}-{nnnn}",
+                    })).status_code, 400)
+                    invalid_rule = await client.post("/api/numbered-years/rules", headers=auth, json={
+                        "fiscal_year_firm_id": second_firm_id, "rule_name": "Invalid",
+                        "template": "AF-{yyyy}-{bad}",
+                    })
+                    self.assertEqual(invalid_rule.status_code, 400)
+                    second_rule = await client.post("/api/numbered-years/rules", headers=auth, json={
+                        "fiscal_year_firm_id": second_firm_id, "rule_name": "Standard",
+                        "template": "AF-{yyyy}-{nnnn}",
+                    })
+                    self.assertEqual(second_rule.status_code, 200, second_rule.text)
+                    self.assertEqual(second_rule.json()["sequence_digits"], 4)
+                    second_rule_id = second_rule.json()["id"]
+                    self.assertEqual((await client.put(f"/api/numbered-years/rules/{second_rule_id}", headers=auth, json={
+                        "template": "AF-{yyyy}-{nnn}", "sequence_digits": 4,
+                    })).status_code, 400)
+                    self.assertEqual((await client.put(f"/api/numbered-years/rules/{second_rule_id}", headers=auth, json={
+                        "template": "EX-{yyyy}-{nnn}", "sequence_digits": 3,
+                    })).status_code, 400)
+                    self.assertEqual((await client.post("/api/numbered-years/report-types", headers=auth, json={
+                        "fiscal_year_firm_id": second_firm_id, "report_type": "Other Audit",
+                        "rule_id": first_rule_id,
+                    })).status_code, 400)
+                    second_type = await client.post("/api/numbered-years/report-types", headers=auth, json={
+                        "fiscal_year_firm_id": second_firm_id, "report_type": "Other Audit",
+                        "rule_id": second_rule_id,
+                    })
+                    self.assertEqual(second_type.status_code, 200, second_type.text)
+                    self.assertEqual((await client.put(f"/api/numbered-years/report-types/{first_type_id}", headers=auth, json={
+                        "rule_id": second_rule_id,
+                    })).status_code, 400)
+                    self.assertEqual((await client.delete(f"/api/numbered-years/rules/{first_rule_id}", headers=auth)).status_code, 400)
+
+                    empty_year = await client.post("/api/numbered-years", headers=auth, json={"year": 2025})
+                    self.assertEqual(empty_year.status_code, 200, empty_year.text)
+                    empty_firm = await client.post("/api/numbered-years/firms", headers=auth, json={
+                        "fiscal_year_id": empty_year.json()["id"], "firm": "Temporary Firm",
+                    })
+                    empty_rule = await client.post("/api/numbered-years/rules", headers=auth, json={
+                        "fiscal_year_firm_id": empty_firm.json()["id"], "rule_name": "Temporary",
+                        "template": "TMP-{yyyy}-{nnn}",
+                    })
+                    self.assertEqual((await client.post("/api/numbered-years/report-types", headers=auth, json={
+                        "fiscal_year_firm_id": empty_firm.json()["id"], "report_type": "Temporary",
+                        "rule_id": empty_rule.json()["id"],
+                    })).status_code, 200)
+                    self.assertEqual((await client.delete(f"/api/numbered-years/{empty_year.json()['id']}", headers=auth)).status_code, 200)
+                    self.assertFalse(any(year["year"] == 2025 for year in (await client.get("/api/numbered-years", headers=auth)).json()))
 
                     practitioner = await client.post("/api/users", headers=auth, json={
                         "username": "auditor", "password": "another-password", "real_name": "执业人员", "role": "practitioner",
@@ -70,6 +144,12 @@ class FirstRunTest(unittest.IsolatedAsyncioTestCase):
                     })
                     self.assertEqual(project.status_code, 200, project.text)
                     project_id = project.json()["project_id"]
+                    self.assertEqual((await client.put(f"/api/numbered-years/report-types/{first_type_id}", headers=auth, json={
+                        "report_type": "Renamed Audit",
+                    })).status_code, 400)
+                    self.assertEqual((await client.delete(f"/api/numbered-years/report-types/{first_type_id}", headers=auth)).status_code, 400)
+                    self.assertEqual((await client.delete(f"/api/numbered-years/firms/{first_firm['id']}", headers=auth)).status_code, 400)
+                    self.assertEqual((await client.delete(f"/api/numbered-years/{configured_year['id']}", headers=auth)).status_code, 400)
 
                     other_user = await client.post("/api/users", headers=auth, json={
                         "username": "other_auditor", "password": "another-password", "real_name": "其他人员", "role": "practitioner",

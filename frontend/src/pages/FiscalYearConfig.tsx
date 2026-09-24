@@ -398,7 +398,7 @@ export default function FiscalYearConfigPage() {
     setRuleForm({
       fiscalYearFirmId: firm.id,
       ruleName: '',
-      template: '{yyyy}-{nnn}',
+      template: '',
       sequenceDigits: 3
     })
     setShowRuleDialog(true)
@@ -988,7 +988,7 @@ export default function FiscalYearConfigPage() {
           </DialogHeader>
           <form onSubmit={handleCreateRule} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="ruleName">业务类型</Label>
+              <Label htmlFor="ruleName">规则名称</Label>
               <Input
                 id="ruleName"
                 value={ruleForm.ruleName}
@@ -1001,7 +1001,7 @@ export default function FiscalYearConfigPage() {
               <Label htmlFor="template">编号规则</Label>
               <TemplateEditor
                 value={ruleForm.template}
-                onChange={(template) => setRuleForm({ ...ruleFormRef.current, template })}
+                onChange={(template) => setRuleForm({ ...ruleFormRef.current, template, sequenceDigits: parseSequenceDigits(template) })}
                 placeholder="输入编号模板，如：{yyyy}-审-{nnn}"
               />
             </div>

@@ -36,7 +36,7 @@ from report_no_generator import (
 Base.metadata.create_all(bind=engine)
 migrate_legacy_finance()
 
-app = FastAPI(title="事务所项目编号管理系统", version="0.1.2")
+app = FastAPI(title="事务所项目编号管理系统", version="0.1.3")
 
 # 默认采用同源部署；独立前端部署时可明确配置允许的来源。
 cors_origins = [origin.strip() for origin in os.getenv("FIRM_MANAGER_CORS_ORIGINS", "").split(",") if origin.strip()]
@@ -63,9 +63,24 @@ def validate_setup_template(template: str) -> int:
     matches = re.findall(r"\{(n{1,10})\}", template)
     if len(matches) != 1:
         raise HTTPException(status_code=400, detail="编号模板必须包含且只能包含一个序号占位符，例如 {nnn}")
-    if re.search(r"\{[^{}]*\}", re.sub(r"\{yyyy\}|\{yy\}|\{n{1,10}\}", "", template)):
+    if re.search(r"[{}]", re.sub(r"\{yyyy\}|\{yy\}|\{n{1,10}\}", "", template)):
         raise HTTPException(status_code=400, detail="编号模板包含不支持的占位符")
     return len(matches[0])
+
+
+def numbering_format_key(template: str, year: int) -> str:
+    """Compare rendered formats before a sequence is assigned."""
+    rendered = template.replace("{yyyy}", str(year)).replace("{yy}", str(year)[-2:])
+    return re.sub(r"\{n{1,10}\}", "{sequence}", rendered)
+
+
+def ensure_unique_numbering_format(db: Session, template: str, year: int, exclude_rule_id: Optional[int] = None):
+    candidate = numbering_format_key(template, year)
+    rules = db.query(models.ReportNumberRule).join(models.FiscalYearFirm).join(models.FiscalYear).filter(
+        models.FiscalYear.year == year
+    ).all()
+    if any(rule.id != exclude_rule_id and numbering_format_key(rule.template, year) == candidate for rule in rules):
+        raise HTTPException(status_code=400, detail="该年度已有相同的编号格式，请使用不同模板或复用已有规则")
 
 
 @app.get("/api/setup/status", response_model=schemas.SetupStatus)
@@ -99,6 +114,7 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
 
     normalized_firms = []
     firm_names = set()
+    numbering_formats = set()
     for firm_data in data.firms:
         firm_name = firm_data.name.strip()
         if not firm_name or len(firm_name) > 100 or firm_name in firm_names:
@@ -114,6 +130,10 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
             if not report_name or len(report_name) > 100 or report_name in report_names:
                 raise HTTPException(status_code=400, detail=f"事务所“{firm_name}”的业务类型不能为空且不能重复")
             sequence_digits = validate_setup_template(report_data.template.strip())
+            format_key = numbering_format_key(report_data.template.strip(), data.fiscal_year)
+            if format_key in numbering_formats:
+                raise HTTPException(status_code=400, detail="存在重复编号格式，请为不同规则设置不同模板")
+            numbering_formats.add(format_key)
             rule_name = (report_data.rule_name or '').strip() or f"{report_name}编号"
             if len(rule_name) > 50 or rule_name in rule_names:
                 raise HTTPException(status_code=400, detail=f"事务所“{firm_name}”的规则名称过长或重复")
@@ -308,6 +328,8 @@ async def set_current_fiscal_year(
     current_year = datetime.now().year
     if fiscal_year < current_year - 5 or fiscal_year > current_year + 1:
         raise HTTPException(status_code=400, detail="年度超出允许范围")
+    if not db.query(models.FiscalYear.id).filter_by(year=fiscal_year).first():
+        raise HTTPException(status_code=400, detail="该编号年度尚未配置")
 
     current_user.fiscal_year = fiscal_year
     db.commit()
@@ -1479,6 +1501,13 @@ async def delete_numbered_year(
     if not fy:
         raise HTTPException(status_code=404, detail="年度不存在")
 
+    if db.query(models.Project.id).filter_by(fiscal_year=fy.year).first():
+        raise HTTPException(status_code=400, detail="该年度已有项目，不能删除")
+    if db.query(models.User.id).filter_by(fiscal_year=fy.year).first():
+        raise HTTPException(status_code=400, detail="有用户正在使用该年度，请先切换操作年度")
+
+    for firm in db.query(models.FiscalYearFirm).filter_by(fiscal_year_id=fy.id).all():
+        db.delete(firm)
     db.delete(fy)
     db.commit()
     return {"message": "删除成功"}
@@ -1529,6 +1558,11 @@ async def delete_fiscal_year_firm(
     if not firm:
         raise HTTPException(status_code=404, detail="事务所不存在")
 
+    if db.query(models.Project.id).filter_by(
+        fiscal_year=firm.fiscal_year.year, firm=firm.firm
+    ).first():
+        raise HTTPException(status_code=400, detail="该事务所已有项目，不能删除")
+
     db.delete(firm)
     db.commit()
     return {"message": "删除成功"}
@@ -1544,6 +1578,8 @@ async def create_report_number_rule(
     """创建编号规则"""
     if not can_manage_fiscal_config(current_user):
         raise HTTPException(status_code=403, detail="无权限管理")
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
 
     # 检查事务所是否存在
     firm = db.query(models.FiscalYearFirm).filter(models.FiscalYearFirm.id == data.fiscal_year_firm_id).first()
@@ -1558,11 +1594,16 @@ async def create_report_number_rule(
     if existing:
         raise HTTPException(status_code=400, detail="该规则名称已存在")
 
+    sequence_digits = validate_setup_template(data.template)
+    if 'sequence_digits' in data.__fields_set__ and data.sequence_digits != sequence_digits:
+        raise HTTPException(status_code=400, detail="编号位数必须与模板序号占位符一致")
+    ensure_unique_numbering_format(db, data.template, firm.fiscal_year.year)
+
     rule = models.ReportNumberRule(
         fiscal_year_firm_id=data.fiscal_year_firm_id,
         rule_name=data.rule_name,
         template=data.template,
-        sequence_digits=data.sequence_digits
+        sequence_digits=sequence_digits
     )
     db.add(rule)
     db.commit()
@@ -1580,12 +1621,31 @@ async def update_report_number_rule(
     """更新编号规则"""
     if not can_manage_fiscal_config(current_user):
         raise HTTPException(status_code=403, detail="无权限管理")
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
 
     rule = db.query(models.ReportNumberRule).filter(models.ReportNumberRule.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail="规则不存在")
 
-    for key, value in data.dict(exclude_unset=True).items():
+    changes = data.dict(exclude_unset=True)
+    if any(value is None for value in changes.values()):
+        raise HTTPException(status_code=400, detail="规则字段不能为空")
+    if 'rule_name' in changes and changes['rule_name'] != rule.rule_name:
+        if db.query(models.ReportNumberRule.id).filter_by(
+            fiscal_year_firm_id=rule.fiscal_year_firm_id, rule_name=changes['rule_name']
+        ).first():
+            raise HTTPException(status_code=400, detail="该规则名称已存在")
+    if 'template' in changes or 'sequence_digits' in changes:
+        sequence_digits = validate_setup_template(changes.get('template', rule.template))
+        if 'sequence_digits' in changes and changes['sequence_digits'] != sequence_digits:
+            raise HTTPException(status_code=400, detail="编号位数必须与模板序号占位符一致")
+        changes['sequence_digits'] = sequence_digits
+        ensure_unique_numbering_format(
+            db, changes.get('template', rule.template), rule.fiscal_year_firm.fiscal_year.year, rule.id
+        )
+
+    for key, value in changes.items():
         setattr(rule, key, value)
 
     db.commit()
@@ -1606,6 +1666,9 @@ async def delete_report_number_rule(
     rule = db.query(models.ReportNumberRule).filter(models.ReportNumberRule.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail="规则不存在")
+
+    if rule.report_types or rule.current_sequence:
+        raise HTTPException(status_code=400, detail="规则已关联业务类型或已有编号，请停用规则")
 
     db.delete(rule)
     db.commit()
@@ -1632,6 +1695,8 @@ async def create_fiscal_year_report_type(
     rule = db.query(models.ReportNumberRule).filter(models.ReportNumberRule.id == data.rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail="规则不存在")
+    if rule.fiscal_year_firm_id != firm.id:
+        raise HTTPException(status_code=400, detail="业务类型只能关联同一事务所的编号规则")
 
     # 检查业务类型是否已存在
     existing = db.query(models.FiscalYearReportType).filter(
@@ -1669,6 +1734,11 @@ async def update_fiscal_year_report_type(
 
     # 更新业务类型名称
     if data.report_type is not None and data.report_type != rt.report_type:
+        firm = rt.fiscal_year_firm
+        if db.query(models.Project.id).filter_by(
+            fiscal_year=firm.fiscal_year.year, firm=firm.firm, report_type=rt.report_type
+        ).first():
+            raise HTTPException(status_code=400, detail="该业务类型已有项目，不能改名")
         existing = db.query(models.FiscalYearReportType).filter(
             models.FiscalYearReportType.fiscal_year_firm_id == rt.fiscal_year_firm_id,
             models.FiscalYearReportType.report_type == data.report_type
@@ -1682,6 +1752,8 @@ async def update_fiscal_year_report_type(
         rule = db.query(models.ReportNumberRule).filter(models.ReportNumberRule.id == data.rule_id).first()
         if not rule:
             raise HTTPException(status_code=404, detail="规则不存在")
+        if rule.fiscal_year_firm_id != rt.fiscal_year_firm_id:
+            raise HTTPException(status_code=400, detail="业务类型只能关联同一事务所的编号规则")
         rt.rule_id = data.rule_id
 
     db.commit()
@@ -1702,6 +1774,12 @@ async def delete_fiscal_year_report_type(
     rt = db.query(models.FiscalYearReportType).filter(models.FiscalYearReportType.id == rt_id).first()
     if not rt:
         raise HTTPException(status_code=404, detail="业务类型不存在")
+
+    firm = rt.fiscal_year_firm
+    if db.query(models.Project.id).filter_by(
+        fiscal_year=firm.fiscal_year.year, firm=firm.firm, report_type=rt.report_type
+    ).first():
+        raise HTTPException(status_code=400, detail="该业务类型已有项目，不能删除")
 
     db.delete(rt)
     db.commit()

@@ -28,6 +28,7 @@ error-debug.png
 # Workbuddy 私有记忆和本地配置
 .workbuddy/
 安装包/
+local-archive/
 
 # 旧版本机辅助脚本和构建日志（保留在本地，不作为发布源码）
 add_import_export.py
