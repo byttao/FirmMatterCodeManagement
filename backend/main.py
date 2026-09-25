@@ -453,6 +453,11 @@ async def update_user(
         if not real_name:
             raise HTTPException(status_code=400, detail="姓名不能为空")
         user.real_name = real_name
+        # 签字人记录保留了姓名用于历史展示；账号改名时同步更新，避免
+        # 同一个执业账号在用户管理和签字人列表中出现两个姓名。
+        db.query(models.Signer).filter(models.Signer.user_id == user.id).update(
+            {models.Signer.name: real_name}, synchronize_session=False
+        )
     if user_data.role is not None:
         user.role = user_data.role
     if user_data.password:
