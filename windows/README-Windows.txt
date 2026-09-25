@@ -9,6 +9,6 @@
 完整图文说明：双击“安装与初始化.html”。
 Manager.exe 和 BackendServer.exe 已包含 Python 运行时；正式运行不需要另装 Python 或 Node.js。
 关闭 Manager.exe 不会停止后台服务。业务数据和密钥保存在 data 目录。
-发布包内 prerequisites 目录存放可选前置安装包及其说明。
+发布包不附带额外的 Python 安装包；如需维护源码，请在开发环境单独安装 Python 和依赖。
 
 公网访问前请配置 DNS/路由；敏感业务建议使用 HTTPS 反向代理。

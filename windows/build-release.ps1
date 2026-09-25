@@ -6,11 +6,10 @@ Set-Location $projectRoot
 $version = (Get-Content "VERSION" -Raw).Trim()
 $buildDir = Join-Path $projectRoot "build\windows-release"
 $packageDir = Join-Path $buildDir "package"
-$prerequisitesDir = Join-Path $packageDir "prerequisites"
 $asset = Join-Path $buildDir "FirmMatterCodeManagement-win-x64.zip"
 
 if (Test-Path $packageDir) { Remove-Item $packageDir -Recurse -Force }
-New-Item -ItemType Directory -Force $packageDir, $prerequisitesDir | Out-Null
+New-Item -ItemType Directory -Force $packageDir | Out-Null
 
 python -m PyInstaller --noconfirm --clean --onefile --name BackendServer `
   --paths backend --paths windows `
@@ -64,7 +63,6 @@ if ($managerTest.ExitCode -ne 0) { throw "Manager.exe 自检失败" }
 
 Copy-Item "dist\Manager.exe", "dist\BackendServer.exe", "VERSION" $packageDir -Force
 Copy-Item "windows\FirmMatterService.xml", "windows\README-Windows.txt", "windows\安装与初始化.html" $packageDir -Force
-Copy-Item "windows\prerequisites\README.txt" $prerequisitesDir -Force
 
 $winsw = Join-Path $packageDir "FirmMatterService.exe"
 Invoke-WebRequest -Uri "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe" -OutFile $winsw
@@ -108,13 +106,6 @@ try {
     & $serviceWrapper stop | Out-Null
     & $serviceWrapper uninstall | Out-Null
   }
-}
-
-$pythonInstaller = Join-Path $prerequisitesDir "python-3.11.9-amd64.exe"
-Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -OutFile $pythonInstaller
-$pythonHash = (Get-FileHash $pythonInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($pythonHash -ne "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde") {
-  throw "Python 安装包哈希不匹配：$pythonHash"
 }
 
 if (Test-Path $asset) { Remove-Item $asset }

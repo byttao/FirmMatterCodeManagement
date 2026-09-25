@@ -238,7 +238,7 @@ function TemplateEditor({
         </span>
         <span className="flex items-center gap-1">
           <Badge variant="outline" className="bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-300 px-1.5 py-0.5 font-mono">{'{nnn}'}</Badge>
-          编号（位数=n的个数，如 SD{'{nnn}'}）
+          序号（支持 {'{n}'} 到 {'{nnnnnnnnnn}'}，位数由 n 的数量决定）
         </span>
         <span className="text-muted-foreground/60">提示：输入 {'{'} 后按 y/Y/n 可快速插入占位符</span>
       </div>

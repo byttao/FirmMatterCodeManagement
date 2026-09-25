@@ -37,7 +37,6 @@ class WindowsManagerCoreTest(unittest.TestCase):
             "FirmMatterService.xml": "<service />",
             "README-Windows.txt": "instructions",
             "安装与初始化.html": "<html></html>",
-            "prerequisites/README.txt": "no runtime needed",
         }
         self.pack()
 
@@ -69,7 +68,7 @@ class WindowsManagerCoreTest(unittest.TestCase):
         self.assertTrue(replaced)
         self.assertEqual(core.read_version(self.root), "0.1.11")
         self.assertEqual((self.root / "Manager.exe").read_text(), "new manager")
-        self.assertEqual((self.root / "prerequisites" / "README.txt").read_text(), "no runtime needed")
+        self.assertFalse((self.root / "prerequisites").exists())
         with sqlite3.connect(self.root / "data" / "db.sqlite") as connection:
             self.assertEqual(connection.execute("SELECT name FROM projects").fetchone(), ("existing client",))
         with sqlite3.connect(backup) as connection:

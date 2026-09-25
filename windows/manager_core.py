@@ -32,7 +32,6 @@ REQUIRED_FILES = {
     "VERSION",
     "README-Windows.txt",
     "安装与初始化.html",
-    "prerequisites/README.txt",
 }
 DEFAULT_CONFIG = {"bind_host": "0.0.0.0", "port": 8000, "public_host": ""}
 
@@ -252,7 +251,7 @@ def validate_package(archive_path: Path, target_version: str) -> list[str]:
             parts = PurePosixPath(name).parts
             if (not name or name.startswith("/") or "\\" in name or ":" in name
                     or any(part in {"", ".", ".."} for part in name.split("/"))
-                    or len(parts) > 2 or (len(parts) == 2 and parts[0] != "prerequisites")
+                    or len(parts) > 1
                     or parts[0].startswith(".") or parts[0] == "data"):
                 raise RuntimeError(f"Windows 安装包包含非法路径：{name}")
             info = archive.getinfo(name)

@@ -53,7 +53,7 @@
       <ol>
         <li>创建管理员账号并设置至少 8 位密码。</li>
         <li>选择首个编号年度，填写事务所名称。</li>
-        <li>为各事务所填写业务类型和编号模板。模板必须含 <code>{yyyy}</code> 与一个序号占位符，如 <code>{nnn}</code>；示例 <code>{yyyy}-{nnn}</code>。</li>
+        <li>为各事务所填写业务类型和编号模板。支持 <code>{yyyy}</code>（2026）、<code>{yy}</code>（26）以及 <code>{n}</code> 到 <code>{nnnnnnnnnn}</code> 的序号占位符；模板必须含 <code>{yyyy}</code> 与一个序号占位符，例如 <code>{yyyy}-{nnn}</code>。</li>
         <li>完成后登录，在“用户管理”建立执业人员账号，再在“签字人管理”按账号关联签字人。同名人员以账号区分。</li>
       </ol>
       <p>系统不会预置事务所名称、文号、管理员账号或业务数据。</p>
@@ -83,7 +83,7 @@
 
     <section>
       <h2>前置环境</h2>
-      <p>发布包无需额外安装 Python、Node.js 或 Rust。<a href="prerequisites/README.txt">prerequisites 目录</a>存放可选的源码维护安装包和说明；正式部署不需要使用其中的 Python 安装包。</p>
+      <p>发布包无需额外安装 Python、Node.js 或 Rust。两个业务 EXE 已包含运行所需的 Python 运行时；源码维护所需的软件请在开发环境单独安装。</p>
       <p>支持 64 位 Windows 10/11 和带桌面体验的 Windows Server。无桌面体验的 Server Core 无法打开管理界面，可使用系统服务命令管理已安装的服务。</p>
     </section>
     <footer>FirmMatterCodeManagement · 请始终从项目 GitHub Release 获取新版安装包。</footer>

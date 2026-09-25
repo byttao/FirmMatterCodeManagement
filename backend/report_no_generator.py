@@ -5,9 +5,10 @@
 - 如果对应的年度/事务所/业务类型 在新表中未配置，直接报错（不静默降级）
 
 模板格式说明：
-- {yyyy} - 四位年份，如 2026
-- {yy}   - 两位年份，如 26
-- {nnn}  - 编号，n 的个数决定位数，如 {nnn}=001, {nnnn}=0001
+- {yyyy} - 四位编号年度，如 2026
+- {yy}   - 两位编号年度，如 26
+- {n} 到 {nnnnnnnnnn} - 序号，n 的个数决定补零位数，如 {nnn}=001
+- 模板必须包含 {yyyy} 并且只能包含一个序号占位符；其他花括号占位符不支持
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import update
