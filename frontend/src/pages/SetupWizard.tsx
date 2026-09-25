@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Building2, CheckCircle2, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Building2, CheckCircle2, KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { publicNumberedYearApi, type SetupFirm, type SetupRequest } from '@/api/fiscalYearConfig'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -29,6 +29,9 @@ export default function SetupWizard() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [checking, setChecking] = useState(true)
+  const [licenseServerUrl, setLicenseServerUrl] = useState('')
+  const [licenseJson, setLicenseJson] = useState('')
+  const [instanceName, setInstanceName] = useState('')
 
   useEffect(() => {
     publicNumberedYearApi.getSetupStatus().then((res) => {
@@ -88,7 +91,24 @@ export default function SetupWizard() {
 
     setSaving(true)
     try {
-      await publicNumberedYearApi.setup(form)
+      let license_document: Record<string, unknown> | undefined
+      if (licenseJson.trim()) {
+        try {
+          const parsed = JSON.parse(licenseJson)
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+          license_document = parsed as Record<string, unknown>
+        } catch {
+          setError('授权文件必须是有效的 JSON 内容')
+          setSaving(false)
+          return
+        }
+      }
+      await publicNumberedYearApi.setup({
+        ...form,
+        license_document,
+        license_server_url: licenseServerUrl.trim() || undefined,
+        instance_name: instanceName.trim() || undefined,
+      })
       navigate('/login', { replace: true, state: { setupComplete: true } })
     } catch (err: any) {
       setError(err.response?.data?.detail || '初始化失败，请检查填写内容后重试')
@@ -191,6 +211,29 @@ export default function SetupWizard() {
                 </div>
               ))}
               <Button type="button" variant="outline" onClick={() => setForm({ ...form, firms: [...form.firms, newFirm()] })}><Plus className="mr-2 h-4 w-4" />添加事务所</Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2"><KeyRound className="h-5 w-5" />4. 商用授权（按需）</CardTitle>
+              <CardDescription>商用发布包开启授权校验时，请粘贴授权管理工具导出的 JSON 文件；开发测试可留空。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="license_server_url">授权服务器地址</Label>
+                  <Input id="license_server_url" value={licenseServerUrl} onChange={(e) => setLicenseServerUrl(e.target.value)} placeholder="例如：https://license.example.com" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="instance_name">服务器名称（可选）</Label>
+                  <Input id="instance_name" value={instanceName} onChange={(e) => setInstanceName(e.target.value)} placeholder="例如：XX事务所生产服务器" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="license_json">授权 JSON</Label>
+                <textarea id="license_json" value={licenseJson} onChange={(e) => setLicenseJson(e.target.value)} placeholder="粘贴授权管理工具导出的 JSON 内容" className="min-h-32 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono shadow-sm outline-none focus:ring-2 focus:ring-ring" />
+              </div>
             </CardContent>
           </Card>
 

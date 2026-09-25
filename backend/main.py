@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from datetime import timedelta, datetime
 from typing import Optional, List
@@ -33,10 +33,67 @@ from report_no_generator import (
     get_available_report_years, get_available_firms, get_available_report_types, get_rule
 )
 from version import APP_VERSION
+from license_client import activate as activate_license, heartbeat as heartbeat_license, license_required, status as license_status
+import asyncio
 
 upgrade_database(engine)
 
 app = FastAPI(title="业码汇 - 事务所业务编号管理", version=APP_VERSION)
+_license_heartbeat_task = None
+
+
+async def _license_heartbeat_loop():
+    interval = max(300, int(os.getenv("FIRM_MANAGER_LICENSE_HEARTBEAT_SECONDS", "86400")))
+    while True:
+        await asyncio.sleep(interval)
+        if license_required() and license_status().get("allowed"):
+            try:
+                await heartbeat_license()
+            except Exception:
+                # 本地缓存和宽限期负责短时断网；下次周期继续重试。
+                pass
+
+
+@app.on_event("startup")
+async def start_license_heartbeat():
+    global _license_heartbeat_task
+    if license_required():
+        _license_heartbeat_task = asyncio.create_task(_license_heartbeat_loop())
+
+
+@app.on_event("shutdown")
+async def stop_license_heartbeat():
+    global _license_heartbeat_task
+    if _license_heartbeat_task:
+        _license_heartbeat_task.cancel()
+        _license_heartbeat_task = None
+
+
+@app.middleware("http")
+async def enforce_license(request: Request, call_next):
+    """商用包开启 FIRM_MANAGER_LICENSE_REQUIRED 后强制检查授权。"""
+    if license_required() and request.url.path.startswith("/api/") and not (
+        request.url.path.startswith("/api/license")
+        or request.url.path.startswith("/api/setup")
+    ):
+        current = license_status()
+        if not current.get("allowed"):
+            return JSONResponse(status_code=402, content={"detail": current.get("reason", "授权不可用"), "license_required": True})
+    return await call_next(request)
+
+
+@app.get("/api/license/status")
+async def get_license_status():
+    return license_status()
+
+
+@app.post("/api/license/activate")
+async def activate_license_file(data: schemas.LicenseActivationRequest):
+    try:
+        result = await activate_license(data.license_document, data.server_url, data.instance_name)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result
 
 MIN_CONFIG_YEAR = 2000
 MAX_CONFIG_YEAR = 2100
@@ -137,6 +194,13 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
     """首次安装：创建管理员和第一年度的自定义编号配置。"""
     if not request.client or request.client.host not in ("127.0.0.1", "::1"):
         raise HTTPException(status_code=403, detail="首次安装仅允许从服务器本机完成")
+    if license_required():
+        if not data.license_document:
+            raise HTTPException(status_code=402, detail="商用部署必须先导入授权文件并完成激活")
+        try:
+            await activate_license(data.license_document, data.license_server_url, data.instance_name)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=f"授权激活失败：{exc}")
     if db.get_bind().dialect.name == "sqlite":
         db.execute(text("BEGIN IMMEDIATE"))
     if is_system_initialized(db):

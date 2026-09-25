@@ -17,6 +17,9 @@ export interface SetupRequest {
   admin_real_name: string
   fiscal_year: number
   firms: SetupFirm[]
+  license_document?: Record<string, unknown>
+  license_server_url?: string
+  instance_name?: string
 }
 
 // 公开接口（无需认证）

@@ -96,6 +96,12 @@ class UserLogin(BaseModel):
     fiscal_year: Optional[int] = None  # 登录时可选指定年度，不指定则用当前年
 
 
+class LicenseActivationRequest(BaseModel):
+    license_document: dict
+    server_url: Optional[str] = None
+    instance_name: Optional[str] = None
+
+
 # ============ 首次安装 ============
 class SetupReportType(BaseModel):
     report_type: str
@@ -114,6 +120,9 @@ class SetupRequest(BaseModel):
     admin_real_name: str
     fiscal_year: int
     firms: List[SetupFirm]
+    license_document: Optional[dict] = None
+    license_server_url: Optional[str] = None
+    instance_name: Optional[str] = None
 
 
 class SetupStatus(BaseModel):

@@ -9,6 +9,7 @@
 ## 项目文档
 
 - [安装与部署教程](docs/安装与部署.md)
+- [v0.1.19 数据测试报告](docs/数据测试报告-v0.1.19.md)
 - [Windows 离线安装与初始化页面](windows/安装与初始化.html)
 - [第三方致谢与许可证](THIRD_PARTY_NOTICES.md)
 - [MIT 开源协议](LICENSE)
