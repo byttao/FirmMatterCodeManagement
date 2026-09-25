@@ -87,7 +87,7 @@ export default function Layout() {
             >
               {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </Button>
-            <h1 className="text-lg font-bold text-primary">事务所项目管理系统</h1>
+            <img src="/branding/yemahui-banner-small.png" alt="业码汇" className="h-10 w-auto max-w-[180px] object-contain" />
           </div>
 
           <div className="flex items-center gap-4">

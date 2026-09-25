@@ -1,6 +1,17 @@
-# 事务所业务编号管理系统
+# 业码汇
 
-面向会计师事务所、税务师事务所及其他专业服务机构的项目管理工具，覆盖项目分配、业务编号、签字人、开票登记、收款登记、权限管理和 Excel 导出。
+<p align="center"><img src="docs/assets/yemahui-banner-large.png" alt="业码汇" width="100%"></p>
+
+业码汇（FirmMatterCodeManagement）是面向会计师事务所、税务师事务所及其他专业服务机构的业务编号与项目管理系统。
+
+项目覆盖项目分配、业务编号、签字人、开票登记、收款登记、权限管理和 Excel 导出。
+
+## 项目文档
+
+- [安装与部署教程](docs/安装与部署.md)
+- [Windows 离线安装与初始化页面](windows/安装与初始化.html)
+- [第三方致谢与许可证](THIRD_PARTY_NOTICES.md)
+- [MIT 开源协议](LICENSE)
 
 ## 功能概览
 
@@ -130,3 +141,7 @@ JWT 签名密钥首次启动时自动生成在数据目录的 `jwt_secret` 文�
 ## 版本发布
 
 每次推送都应对应一个递增版本号和 GitHub Release。提交说明与 Release 标题、更新说明使用简短中文，概括版本号及主要修改。正式发布前执行后端集成测试与前端构建，并确认运行数据库、密钥、工作记忆和构建产物未进入 Git 暂存区。
+
+## 开源协议
+
+本项目使用 [MIT License](LICENSE) 开源。第三方依赖按照各自许可证使用，详见[第三方致谢](THIRD_PARTY_NOTICES.md)。

@@ -1,4 +1,4 @@
-事务所业务编号管理系统 - Windows 服务器版
+业码汇 - Windows 服务器版
 
 1. 解压整个 ZIP 到固定目录，例如 C:\FirmMatterCodeManagement。
 2. 双击 Manager.exe，接受 Windows 管理员权限提示。
@@ -7,6 +7,7 @@
 5. 在首次启用页面创建管理员，填写本所名称、业务类型和编号模板。
 
 完整图文说明：双击“安装与初始化.html”。
+安装包内的 `yemahui-banner-small.png` 和 `favicon.ico` 用于安装说明页面品牌展示。
 Manager.exe 和 BackendServer.exe 已包含 Python 运行时；正式运行不需要另装 Python 或 Node.js。
 关闭 Manager.exe 不会停止后台服务。业务数据和密钥保存在 data 目录。
 发布包不附带额外的 Python 安装包；如需维护源码，请在开发环境单独安装 Python 和依赖。

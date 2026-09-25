@@ -37,6 +37,8 @@ class WindowsManagerCoreTest(unittest.TestCase):
             "FirmMatterService.xml": "<service />",
             "README-Windows.txt": "instructions",
             "安装与初始化.html": "<html></html>",
+            "favicon.ico": "icon",
+            "yemahui-banner-small.png": "banner",
         }
         self.pack()
 

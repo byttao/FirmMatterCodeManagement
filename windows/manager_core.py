@@ -32,6 +32,8 @@ REQUIRED_FILES = {
     "VERSION",
     "README-Windows.txt",
     "安装与初始化.html",
+    "favicon.ico",
+    "yemahui-banner-small.png",
 }
 DEFAULT_CONFIG = {"bind_host": "0.0.0.0", "port": 8000, "public_host": ""}
 

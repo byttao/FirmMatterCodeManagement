@@ -1,7 +1,7 @@
 <service>
   <id>FirmMatterCodeManagement</id>
-  <name>事务所业务编号管理系统</name>
-  <description>事务所项目、业务编号、签字及财务登记服务</description>
+  <name>业码汇</name>
+  <description>业码汇事务所项目、业务编号、签字及财务登记服务</description>
   <executable>%BASE%\BackendServer.exe</executable>
   <workingdirectory>%BASE%</workingdirectory>
   <startmode>Automatic</startmode>

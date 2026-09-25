@@ -104,6 +104,7 @@ export default function SetupWizard() {
   return (
     <div className="min-h-screen bg-slate-50 py-8 px-4">
       <div className="mx-auto max-w-3xl">
+        <img src="/branding/yemahui-banner-small.png" alt="业码汇" className="mb-6 h-auto w-full max-w-[520px] object-contain" />
         <div className="mb-6 flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <ShieldCheck className="h-6 w-6" />

@@ -72,12 +72,14 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="space-y-1 text-center">
-          <CardTitle className="text-2xl font-bold">事务所项目管理系统</CardTitle>
-          <CardDescription>请输入账号密码登录</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <div className="w-full max-w-md space-y-4">
+        <img src="/branding/yemahui-banner-small.png" alt="业码汇" className="mx-auto h-auto w-full max-w-[420px] object-contain" />
+        <Card>
+          <CardHeader className="space-y-1 text-center">
+            <CardTitle className="text-2xl font-bold">业码汇</CardTitle>
+            <CardDescription>请输入账号密码登录</CardDescription>
+          </CardHeader>
+          <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             {location.state?.setupComplete && (
               <div className="p-3 text-sm text-green-700 bg-green-50 rounded-md">
@@ -140,8 +142,9 @@ export default function Login() {
               {loading ? '登录中...' : '登录'}
             </Button>
           </form>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }

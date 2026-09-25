@@ -36,7 +36,7 @@ from version import APP_VERSION
 
 upgrade_database(engine)
 
-app = FastAPI(title="事务所项目编号管理系统", version=APP_VERSION)
+app = FastAPI(title="业码汇 - 事务所业务编号管理", version=APP_VERSION)
 
 MIN_CONFIG_YEAR = 2000
 MAX_CONFIG_YEAR = 2100
@@ -1984,6 +1984,7 @@ async def export_projects(
 # 构建产物可缺席；开发模式下 API 与 Vite 分别运行。
 STATIC_DIR = Path(os.getenv("FIRM_MANAGER_STATIC_DIR", Path(__file__).resolve().parent / "static"))
 (STATIC_DIR / "assets").mkdir(parents=True, exist_ok=True)
+(STATIC_DIR / "branding").mkdir(parents=True, exist_ok=True)
 
 # favicon.ico 专门处理（必须在 catch-all 之前）
 @app.get("/favicon.ico", include_in_schema=False)
@@ -2002,6 +2003,7 @@ async def favicon():
 
 # 挂载静态资源目录（assets）
 app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
+app.mount("/branding", StaticFiles(directory=str(STATIC_DIR / "branding")), name="branding")
 
 # SPA 路由支持：所有非 API 路径都返回 index.html（由前端 React Router 处理）
 # 注意：此路由必须在 assets mount 之后注册，否则 assets 请求会被拦截
@@ -2021,7 +2023,7 @@ if __name__ == "__main__":
 
     print()
     print("=" * 50)
-    print("  事务所项目编号管理系统")
+    print("  业码汇 - 事务所业务编号管理")
     print("=" * 50)
     print("  访问地址: http://localhost:8000")
     print("  首次访问请在浏览器中完成安装向导")

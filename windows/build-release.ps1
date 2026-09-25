@@ -13,6 +13,7 @@ New-Item -ItemType Directory -Force $packageDir | Out-Null
 
 python -m PyInstaller --noconfirm --clean --onefile --name BackendServer `
   --paths backend --paths windows `
+  --icon "docs/assets/yemahui-icon.ico" `
   --add-data "frontend/dist;static" --add-data "VERSION;." `
   --collect-all pypinyin --collect-all openpyxl `
   --collect-submodules uvicorn --collect-submodules passlib.handlers `
@@ -20,6 +21,7 @@ python -m PyInstaller --noconfirm --clean --onefile --name BackendServer `
 if ($LASTEXITCODE -ne 0) { throw "BackendServer.exe 构建失败" }
 
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name Manager `
+  --icon "docs/assets/yemahui-icon.ico" `
   --paths windows windows/manager.py
 if ($LASTEXITCODE -ne 0) { throw "Manager.exe 构建失败" }
 
@@ -62,7 +64,8 @@ $managerTest = Start-Process -FilePath (Join-Path $projectRoot "dist\Manager.exe
 if ($managerTest.ExitCode -ne 0) { throw "Manager.exe 自检失败" }
 
 Copy-Item "dist\Manager.exe", "dist\BackendServer.exe", "VERSION" $packageDir -Force
-Copy-Item "windows\FirmMatterService.xml", "windows\README-Windows.txt", "windows\安装与初始化.html" $packageDir -Force
+Copy-Item "windows\FirmMatterService.xml", "windows\README-Windows.txt", "windows\安装与初始化.html", "docs\assets\yemahui-icon.ico", "docs\assets\yemahui-banner-small.png" $packageDir -Force
+Rename-Item (Join-Path $packageDir "yemahui-icon.ico") "favicon.ico"
 
 $winsw = Join-Path $packageDir "FirmMatterService.exe"
 Invoke-WebRequest -Uri "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe" -OutFile $winsw

@@ -123,7 +123,7 @@ class Manager(tk.Tk):
         self.pending_release: dict | None = None
         self.events: queue.Queue = queue.Queue()
 
-        self.title("事务所业务编号系统 - 服务器管理")
+        self.title("业码汇 - 服务器管理")
         self.geometry("690x510")
         self.minsize(620, 470)
         self.columnconfigure(0, weight=1)
