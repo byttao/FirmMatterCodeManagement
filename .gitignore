@@ -11,6 +11,8 @@ backend/*.db
 # 构建、依赖和缓存
 frontend/node_modules/
 frontend/dist/
+frontend/node_modules
+frontend/dist
 build/
 dist/
 *.spec
