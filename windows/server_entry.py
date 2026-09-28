@@ -18,6 +18,12 @@ def main() -> None:
     os.environ["FIRM_MANAGER_DATA_DIR"] = str(data_dir)
     os.environ["FIRM_MANAGER_VERSION_FILE"] = str(root / "VERSION")
     os.environ.pop("FIRM_MANAGER_DATABASE_URL", None)
+    public_key_file = root / "license-public-key.txt"
+    if public_key_file.is_file():
+        public_key = public_key_file.read_text(encoding="ascii").strip()
+        if public_key:
+            os.environ["FIRM_MANAGER_LICENSE_PUBLIC_KEY"] = public_key
+            os.environ["FIRM_MANAGER_LICENSE_REQUIRED"] = "1"
 
     if getattr(sys, "frozen", False):
         os.environ["FIRM_MANAGER_STATIC_DIR"] = str(Path(sys._MEIPASS) / "static")

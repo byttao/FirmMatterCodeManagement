@@ -9,7 +9,7 @@
 ## 项目文档
 
 - [安装与部署教程](docs/安装与部署.md)
-- [v0.1.19 数据测试报告](docs/数据测试报告-v0.1.19.md)
+- [v0.1.20 数据测试报告](docs/数据测试报告-v0.1.20.md)
 - [Windows 离线安装与初始化页面](windows/安装与初始化.html)
 - [第三方致谢与许可证](THIRD_PARTY_NOTICES.md)
 - [MIT 开源协议](LICENSE)
@@ -46,7 +46,7 @@
 
 从 [GitHub Release](https://github.com/byttao/FirmMatterCodeManagement/releases) 下载 `FirmMatterCodeManagement-win-x64.zip`，解压到固定目录，双击 `Manager.exe` 并授予管理员权限。设置监听范围、端口及可选的外部 IP 或域名后，点击“一键启动”。管理工具会安装开机自启的 Windows 服务、配置入站防火墙，并打开本机首次启用页面。完整步骤见 ZIP 内的 `安装与初始化.html`。
 
-安装包中的两个 EXE 已包含 Python 运行时；正式使用无需安装 Python 或 Node.js，发布 ZIP 不再附带额外的 Python 安装包。域名需自行配置 DNS；公网访问业务数据时需另行配置 HTTPS 反向代理。
+安装包中的两个 EXE 采用文件夹模式打包，必须保留同级的 `Manager-internal` 和 `BackendServer-internal` 运行时目录；启动无需重复解压，正式使用无需安装 Python 或 Node.js，发布 ZIP 不再附带额外的 Python 安装包。域名需自行配置 DNS；公网访问业务数据时需另行配置 HTTPS 反向代理。
 
 Windows 版在管理工具中检查 GitHub 新版本，可自动下载并升级；也可先下载最新 ZIP，再在管理工具中选择该文件离线升级。升级会停止服务、备份 SQLite 数据库、替换程序并验证新服务，失败时尝试恢复原程序和数据库。业务数据、密钥及服务器配置保存在解压目录的 `data` 中，迁移服务器时须一并保留。未创建数据库的首次安装目录可直接升级，无需备份空库。
 
@@ -77,7 +77,7 @@ cd backend
 python main.py
 ```
 
-浏览器访问 `http://localhost:8000`。仓库只包含通用源码，旧版 Windows 启动脚本留在原工作目录，不作为新安装入口。
+浏览器访问 `http://localhost:8000`。仓库只包含通用源码，旧版 Windows 启动脚本已移到项目同级的历史归档目录，不作为新安装入口。
 
 ## 首次启用
 

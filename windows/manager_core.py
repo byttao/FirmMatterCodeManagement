@@ -34,7 +34,9 @@ REQUIRED_FILES = {
     "安装与初始化.html",
     "favicon.ico",
     "yemahui-banner-small.png",
+    "license-public-key.txt",
 }
+RUNTIME_DIRS = ("BackendServer-internal", "Manager-internal")
 DEFAULT_CONFIG = {"bind_host": "0.0.0.0", "port": 8000, "public_host": ""}
 
 
@@ -249,19 +251,31 @@ def validate_package(archive_path: Path, target_version: str) -> list[str]:
         names = archive.namelist()
         if len({name.casefold() for name in names}) != len(names) or not REQUIRED_FILES.issubset(names):
             raise RuntimeError("Windows 安装包文件不完整或存在重复文件")
+        runtime_files = {directory: 0 for directory in RUNTIME_DIRS}
+        files = []
         for name in names:
-            parts = PurePosixPath(name).parts
+            parts = PurePosixPath(name.rstrip("/")).parts
             if (not name or name.startswith("/") or "\\" in name or ":" in name
-                    or any(part in {"", ".", ".."} for part in name.split("/"))
-                    or len(parts) > 1
-                    or parts[0].startswith(".") or parts[0] == "data"):
+                    or any(part in {"", ".", ".."} for part in name.rstrip("/").split("/"))
+                    or parts[0].startswith(".") or parts[0] == "data"
+                    or (len(parts) > 1 and parts[0] not in RUNTIME_DIRS)
+                    or (len(parts) == 1 and parts[0] in RUNTIME_DIRS and not name.endswith("/"))):
                 raise RuntimeError(f"Windows 安装包包含非法路径：{name}")
             info = archive.getinfo(name)
-            if info.is_dir() or stat.S_ISLNK(info.external_attr >> 16):
-                raise RuntimeError(f"Windows 安装包包含非法目录：{name}")
+            if stat.S_ISLNK(info.external_attr >> 16):
+                raise RuntimeError(f"Windows 安装包包含非法链接：{name}")
+            if info.is_dir():
+                if parts[0] not in RUNTIME_DIRS:
+                    raise RuntimeError(f"Windows 安装包包含非法目录：{name}")
+                continue
+            if len(parts) > 1:
+                runtime_files[parts[0]] += 1
+            files.append(name)
+        if any(not count for count in runtime_files.values()):
+            raise RuntimeError("Windows 安装包缺少程序运行时目录")
         if archive.read("VERSION").decode("utf-8").strip() != target_version:
             raise RuntimeError("Windows 安装包版本与目标版本不一致")
-    return names
+    return files
 
 
 def backup_database(root: Path) -> Path | None:
@@ -299,8 +313,18 @@ def rollback_files(replaced: list[tuple[Path, Path | None]]) -> None:
     errors = []
     for destination, original in reversed(replaced):
         try:
-            if original:
-                os.replace(original, destination)
+            if destination.is_dir():
+                shutil.rmtree(destination)
+            if original and original.is_dir():
+                shutil.copytree(original, destination)
+            elif original:
+                with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".rollback-", delete=False) as output:
+                    staged = Path(output.name)
+                try:
+                    shutil.copy2(original, staged)
+                    os.replace(staged, destination)
+                finally:
+                    staged.unlink(missing_ok=True)
             else:
                 destination.unlink(missing_ok=True)
         except OSError as exc:
@@ -311,18 +335,31 @@ def rollback_files(replaced: list[tuple[Path, Path | None]]) -> None:
 
 def install_package(root: Path, archive_path: Path, target_version: str, originals: Path) -> list[tuple[Path, Path | None]]:
     names = validate_package(archive_path, target_version)
-    names.sort(key=lambda name: (name == "VERSION", name))
+    root_files = sorted((name for name in names if "/" not in name), key=lambda name: (name == "VERSION", name))
     replaced: list[tuple[Path, Path | None]] = []
     try:
-        with zipfile.ZipFile(archive_path) as archive:
+        with zipfile.ZipFile(archive_path) as archive, tempfile.TemporaryDirectory(dir=root, prefix=".upgrade-stage-") as stage:
+            stage_root = Path(stage)
             for name in names:
+                if "/" not in name:
+                    continue
+                staged = stage_root / name
+                staged.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(name) as source, staged.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+            for directory in RUNTIME_DIRS:
+                destination = root / directory
+                original = originals / directory if destination.exists() else None
+                if original:
+                    shutil.copytree(destination, original)
+                replaced.append((destination, original))
+                if destination.exists():
+                    shutil.rmtree(destination)
+                os.replace(stage_root / directory, destination)
+            for name in root_files:
                 destination = root / name
-                if not destination.parent.resolve().is_relative_to(root.resolve()):
-                    raise RuntimeError(f"安装路径超出程序目录：{name}")
-                destination.parent.mkdir(parents=True, exist_ok=True)
                 original = originals / name if destination.exists() else None
                 if original:
-                    original.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(destination, original)
                 with tempfile.NamedTemporaryFile(dir=root, prefix=".upgrade-", delete=False) as output:
                     staged = Path(output.name)

@@ -24,6 +24,10 @@ class WindowsManagerCoreTest(unittest.TestCase):
         (self.root / "VERSION").write_text("0.1.10\n", encoding="utf-8")
         (self.root / "Manager.exe").write_text("old manager", encoding="utf-8")
         (self.root / "BackendServer.exe").write_text("old backend", encoding="utf-8")
+        for directory in core.RUNTIME_DIRS:
+            runtime = self.root / directory
+            runtime.mkdir()
+            (runtime / "old-runtime.dll").write_text("old runtime", encoding="utf-8")
         database = self.root / "data" / "db.sqlite"
         with sqlite3.connect(database) as connection:
             connection.execute("CREATE TABLE projects (name TEXT)")
@@ -39,6 +43,9 @@ class WindowsManagerCoreTest(unittest.TestCase):
             "安装与初始化.html": "<html></html>",
             "favicon.ico": "icon",
             "yemahui-banner-small.png": "banner",
+            "license-public-key.txt": "test-public-key",
+            "BackendServer-internal/new-runtime.dll": "new backend runtime",
+            "Manager-internal/new-runtime.dll": "new manager runtime",
         }
         self.pack()
 
@@ -70,6 +77,9 @@ class WindowsManagerCoreTest(unittest.TestCase):
         self.assertTrue(replaced)
         self.assertEqual(core.read_version(self.root), "0.1.11")
         self.assertEqual((self.root / "Manager.exe").read_text(), "new manager")
+        for directory in core.RUNTIME_DIRS:
+            self.assertTrue((self.root / directory / "new-runtime.dll").is_file())
+            self.assertFalse((self.root / directory / "old-runtime.dll").exists())
         self.assertFalse((self.root / "prerequisites").exists())
         with sqlite3.connect(self.root / "data" / "db.sqlite") as connection:
             self.assertEqual(connection.execute("SELECT name FROM projects").fetchone(), ("existing client",))
@@ -78,6 +88,9 @@ class WindowsManagerCoreTest(unittest.TestCase):
         core.rollback_files(replaced)
         self.assertEqual(core.read_version(self.root), "0.1.10")
         self.assertEqual((self.root / "Manager.exe").read_text(), "old manager")
+        for directory in core.RUNTIME_DIRS:
+            self.assertTrue((self.root / directory / "old-runtime.dll").is_file())
+            self.assertFalse((self.root / directory / "new-runtime.dll").exists())
 
     def test_copy_failure_rolls_back_program(self):
         original_replace = os.replace
@@ -97,9 +110,12 @@ class WindowsManagerCoreTest(unittest.TestCase):
         self.assertEqual(core.read_version(self.root), "0.1.10")
         self.assertEqual((self.root / "Manager.exe").read_text(), "old manager")
         self.assertEqual((self.root / "BackendServer.exe").read_text(), "old backend")
+        for directory in core.RUNTIME_DIRS:
+            self.assertTrue((self.root / directory / "old-runtime.dll").is_file())
+            self.assertFalse((self.root / directory / "new-runtime.dll").exists())
 
     def test_archive_cannot_replace_data_or_escape_install_directory(self):
-        for name in ("data/db.sqlite", "../outside.exe", "prerequisites/../../outside.exe"):
+        for name in ("data/db.sqlite", "../outside.exe", "prerequisites/../../outside.exe", "unexpected/file.dll", "Manager-internal/../../outside.exe"):
             with self.subTest(name=name):
                 self.package[name] = "bad"
                 self.pack()
@@ -107,6 +123,12 @@ class WindowsManagerCoreTest(unittest.TestCase):
                     core.validate_package(self.archive, "0.1.11")
                 del self.package[name]
         self.assertEqual(core.read_version(self.root), "0.1.10")
+
+    def test_package_requires_both_runtime_directories(self):
+        del self.package["Manager-internal/new-runtime.dll"]
+        self.pack()
+        with self.assertRaisesRegex(RuntimeError, "缺少程序运行时目录"):
+            core.validate_package(self.archive, "0.1.11")
 
     def test_wrong_version_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "版本与目标版本不一致"):
@@ -141,6 +163,9 @@ class WindowsManagerCoreTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(core.read_version(self.root), "0.1.10")
         self.assertEqual((self.root / "BackendServer.exe").read_text(), "old backend")
+        for directory in core.RUNTIME_DIRS:
+            self.assertTrue((self.root / directory / "old-runtime.dll").is_file())
+            self.assertFalse((self.root / directory / "new-runtime.dll").exists())
         with sqlite3.connect(database) as connection:
             self.assertEqual(connection.execute("SELECT name FROM projects").fetchall(), [("existing client",)])
         last_result = json.loads((self.root / "data" / "updates" / "last-result.json").read_text(encoding="utf-8"))

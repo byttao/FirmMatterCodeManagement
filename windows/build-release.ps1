@@ -4,6 +4,10 @@ Set-StrictMode -Version Latest
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $projectRoot
 $version = (Get-Content "VERSION" -Raw).Trim()
+$publicKey = ($env:FIRM_MANAGER_LICENSE_PUBLIC_KEY | ForEach-Object { $_.Trim() })
+if ([string]::IsNullOrWhiteSpace($publicKey)) {
+  throw "缺少 FIRM_MANAGER_LICENSE_PUBLIC_KEY，商用 Windows 发布包不能关闭授权校验"
+}
 $buildDir = Join-Path $projectRoot "build\windows-release"
 $packageDir = Join-Path $buildDir "package"
 $asset = Join-Path $buildDir "FirmMatterCodeManagement-win-x64.zip"
@@ -11,7 +15,7 @@ $asset = Join-Path $buildDir "FirmMatterCodeManagement-win-x64.zip"
 if (Test-Path $packageDir) { Remove-Item $packageDir -Recurse -Force }
 New-Item -ItemType Directory -Force $packageDir | Out-Null
 
-python -m PyInstaller --noconfirm --clean --onefile --name BackendServer `
+python -m PyInstaller --noconfirm --clean --onedir --contents-directory BackendServer-internal --name BackendServer `
   --paths backend --paths windows `
   --icon "docs/assets/yemahui-icon.ico" `
   --add-data "frontend/dist;static" --add-data "VERSION;." `
@@ -20,20 +24,26 @@ python -m PyInstaller --noconfirm --clean --onefile --name BackendServer `
   windows/server_entry.py
 if ($LASTEXITCODE -ne 0) { throw "BackendServer.exe 构建失败" }
 
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name Manager `
+python -m PyInstaller --noconfirm --clean --onedir --contents-directory Manager-internal --windowed --name Manager `
   --icon "docs/assets/yemahui-icon.ico" `
   --paths windows windows/manager.py
 if ($LASTEXITCODE -ne 0) { throw "Manager.exe 构建失败" }
 
-Copy-Item "VERSION" "dist\VERSION" -Force
-$smokeData = Join-Path $projectRoot "dist\data"
+Copy-Item "dist\BackendServer\BackendServer.exe", "dist\Manager\Manager.exe", "VERSION" $packageDir -Force
+Copy-Item "dist\BackendServer\BackendServer-internal" (Join-Path $packageDir "BackendServer-internal") -Recurse -Force
+Copy-Item "dist\Manager\Manager-internal" (Join-Path $packageDir "Manager-internal") -Recurse -Force
+[System.IO.File]::WriteAllText((Join-Path $packageDir "license-public-key.txt"), $publicKey, [System.Text.UTF8Encoding]::new($false))
+Copy-Item "windows\FirmMatterService.xml", "windows\README-Windows.txt", "windows\安装与初始化.html", "docs\assets\yemahui-icon.ico", "docs\assets\yemahui-banner-small.png" $packageDir -Force
+Rename-Item (Join-Path $packageDir "yemahui-icon.ico") "favicon.ico"
+
+$smokeData = Join-Path $packageDir "data"
 New-Item -ItemType Directory -Force $smokeData | Out-Null
 $smokeConfig = '{"bind_host":"127.0.0.1","port":18741,"public_host":""}'
 [System.IO.File]::WriteAllText((Join-Path $smokeData "server.json"), $smokeConfig, [System.Text.UTF8Encoding]::new($false))
 $serverStdout = Join-Path $buildDir "backend-stdout.log"
 $serverStderr = Join-Path $buildDir "backend-stderr.log"
-$server = Start-Process -FilePath (Join-Path $projectRoot "dist\BackendServer.exe") `
-  -WorkingDirectory (Join-Path $projectRoot "dist") `
+$server = Start-Process -FilePath (Join-Path $packageDir "BackendServer.exe") `
+  -WorkingDirectory $packageDir `
   -RedirectStandardOutput $serverStdout -RedirectStandardError $serverStderr -PassThru
 try {
   $ready = $false
@@ -60,12 +70,9 @@ try {
   if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
 }
 
-$managerTest = Start-Process -FilePath (Join-Path $projectRoot "dist\Manager.exe") -ArgumentList "--self-test" -Wait -PassThru
+$managerTest = Start-Process -FilePath (Join-Path $packageDir "Manager.exe") -ArgumentList "--self-test" -Wait -PassThru
 if ($managerTest.ExitCode -ne 0) { throw "Manager.exe 自检失败" }
-
-Copy-Item "dist\Manager.exe", "dist\BackendServer.exe", "VERSION" $packageDir -Force
-Copy-Item "windows\FirmMatterService.xml", "windows\README-Windows.txt", "windows\安装与初始化.html", "docs\assets\yemahui-icon.ico", "docs\assets\yemahui-banner-small.png" $packageDir -Force
-Rename-Item (Join-Path $packageDir "yemahui-icon.ico") "favicon.ico"
+Remove-Item $smokeData -Recurse -Force
 
 $winsw = Join-Path $packageDir "FirmMatterService.exe"
 Invoke-WebRequest -Uri "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe" -OutFile $winsw
@@ -76,9 +83,12 @@ if ($winswHash -ne "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/winsw/winsw/v2.12.0/LICENSE.txt" -OutFile (Join-Path $packageDir "LICENSE-WinSW.txt")
 
 $serviceSmokeDir = Join-Path $buildDir "service-smoke"
+if (Test-Path $serviceSmokeDir) { Remove-Item $serviceSmokeDir -Recurse -Force }
 New-Item -ItemType Directory -Force $serviceSmokeDir | Out-Null
 Copy-Item (Join-Path $packageDir "BackendServer.exe"), $winsw, `
-  (Join-Path $packageDir "FirmMatterService.xml"), (Join-Path $packageDir "VERSION") $serviceSmokeDir -Force
+  (Join-Path $packageDir "FirmMatterService.xml"), (Join-Path $packageDir "VERSION"), `
+  (Join-Path $packageDir "license-public-key.txt") $serviceSmokeDir -Force
+Copy-Item (Join-Path $packageDir "BackendServer-internal") (Join-Path $serviceSmokeDir "BackendServer-internal") -Recurse -Force
 $serviceWrapper = Join-Path $serviceSmokeDir "FirmMatterService.exe"
 $serviceData = Join-Path $serviceSmokeDir "data"
 New-Item -ItemType Directory -Force $serviceData, (Join-Path $serviceData "logs") | Out-Null

@@ -38,6 +38,10 @@ export const authApi = {
   getMe: () => api.get<User>('/auth/me'),
 }
 
+export const licenseApi = {
+  status: () => api.get<{ required: boolean; allowed: boolean; reason: string; features: string[] | null }>('/license/status'),
+}
+
 // 用户管理 API
 export const userApi = {
   list: (include_disabled = false) => api.get<UserType[]>('/users', { params: { include_disabled } }),

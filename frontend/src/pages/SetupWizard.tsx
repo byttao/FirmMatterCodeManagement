@@ -31,6 +31,7 @@ export default function SetupWizard() {
   const [checking, setChecking] = useState(true)
   const [licenseServerUrl, setLicenseServerUrl] = useState('')
   const [licenseJson, setLicenseJson] = useState('')
+  const [licenseFileName, setLicenseFileName] = useState('')
   const [instanceName, setInstanceName] = useState('')
 
   useEffect(() => {
@@ -55,6 +56,20 @@ export default function SetupWizard() {
         report_types: firm.report_types.map((report, itemIndex) => itemIndex === reportIndex ? { ...report, [field]: value } : report),
       }),
     }))
+  }
+
+  const handleLicenseFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      setLicenseJson(await file.text())
+      setLicenseFileName(file.name)
+      setError('')
+    } catch {
+      setLicenseJson('')
+      setLicenseFileName('')
+      setError('无法读取授权文件')
+    }
   }
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -217,7 +232,7 @@ export default function SetupWizard() {
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2"><KeyRound className="h-5 w-5" />4. 商用授权（按需）</CardTitle>
-              <CardDescription>商用发布包开启授权校验时，请粘贴授权管理工具导出的 JSON 文件；开发测试可留空。</CardDescription>
+              <CardDescription>商用发布包开启授权校验时，请选择授权中心下载的 JSON 文件；开发测试可留空。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
@@ -231,8 +246,9 @@ export default function SetupWizard() {
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="license_json">授权 JSON</Label>
-                <textarea id="license_json" value={licenseJson} onChange={(e) => setLicenseJson(e.target.value)} placeholder="粘贴授权管理工具导出的 JSON 内容" className="min-h-32 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono shadow-sm outline-none focus:ring-2 focus:ring-ring" />
+                <Label htmlFor="license_file">授权文件</Label>
+                <Input id="license_file" type="file" accept=".json,application/json" onChange={handleLicenseFile} className="h-auto cursor-pointer py-2" />
+                <p className="text-xs text-muted-foreground">{licenseFileName ? `已选择：${licenseFileName}` : '请选择授权中心下载的 .json 文件'}</p>
               </div>
             </CardContent>
           </Card>

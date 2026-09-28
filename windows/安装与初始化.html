@@ -78,13 +78,14 @@
         <li>离线升级：下载最新的 <code>FirmMatterCodeManagement-win-x64.zip</code>，在管理工具中点击“选择本地 ZIP 升级”。</li>
         <li>升级时工具会停服务、备份 <code>data\db.sqlite</code>、替换程序并重启验证。失败时尝试恢复原程序和数据库。</li>
         <li><code>data</code> 保存数据库、登录密钥、服务器配置和升级备份。迁移或重装时必须连同该目录保留。</li>
+        <li>从旧单文件版首次切换时，先停止服务并关闭旧管理工具，备份整个 <code>data</code>，将新版 ZIP 解压覆盖原目录且保留 <code>data</code>，再运行新版 <code>Manager.exe</code>。旧版管理工具无法直接安装新格式 ZIP。</li>
       </ul>
       <div class="note">不要在运行服务时直接覆盖安装目录。若升级被断电或系统强制终止，请停止服务后从 <code>data</code> 中的升级前备份恢复，并使用对应版本的安装包排查。</div>
     </section>
 
     <section>
       <h2>前置环境</h2>
-      <p>发布包无需额外安装 Python、Node.js 或 Rust。两个业务 EXE 已包含运行所需的 Python 运行时；源码维护所需的软件请在开发环境单独安装。</p>
+      <p>发布包无需额外安装 Python、Node.js 或 Rust。两个 EXE 采用文件夹模式打包，分别依赖同级的 <code>Manager-internal</code> 和 <code>BackendServer-internal</code> 目录；请勿单独移动 EXE。启动时无需反复解压运行时。源码维护所需的软件请在开发环境单独安装。</p>
       <p>支持 64 位 Windows 10/11 和带桌面体验的 Windows Server。无桌面体验的 Server Core 无法打开管理界面，可使用系统服务命令管理已安装的服务。</p>
     </section>
     <footer>业码汇 · 请始终从项目 GitHub Release 获取新版安装包。</footer>

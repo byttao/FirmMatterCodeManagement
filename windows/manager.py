@@ -369,6 +369,7 @@ class Manager(tk.Tk):
                 core.validate_package(archive, version)
             helper = staging / "Manager-Update.exe"
             shutil.copy2(sys.executable, helper)
+            shutil.copytree(self.root_dir / "Manager-internal", staging / "Manager-internal")
             return helper, archive
 
         def done(paths):
@@ -409,7 +410,9 @@ def main() -> int:
             raise RuntimeError("安装或管理 Windows 服务需要管理员权限")
         return 0
     required = [root / name for name in core.REQUIRED_FILES]
-    if any(not path.is_file() for path in required):
+    if any(not path.is_file() for path in required) or any(
+        not (root / name).is_dir() for name in core.RUNTIME_DIRS
+    ):
         raise RuntimeError("Windows 安装包不完整，请重新解压 Release ZIP")
     Manager(root).mainloop()
     return 0

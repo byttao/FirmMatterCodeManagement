@@ -1,7 +1,7 @@
 import { useNavigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
-import { userApi } from '@/api/auth'
+import { licenseApi, userApi } from '@/api/auth'
 import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { ROLE_LABELS, getUserDisplayName } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,7 @@ export default function Layout() {
   const { confirmDirty } = useDirty()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [availableYears, setAvailableYears] = useState<number[]>([])
+  const [licenseFeatures, setLicenseFeatures] = useState<string[] | null>(null)
 
   useEffect(() => {
     // 获取可选的年度列表（从API获取）
@@ -35,6 +36,10 @@ export default function Layout() {
       }
     }
     fetchAvailableYears()
+  }, [])
+
+  useEffect(() => {
+    licenseApi.status().then(({ data }) => setLicenseFeatures(data.features)).catch(() => setLicenseFeatures(null))
   }, [])
 
   const handleYearChange = async (newYear: string) => {
@@ -64,13 +69,14 @@ export default function Layout() {
     navigate('/login')
   }
 
+  const canUse = (feature: string) => licenseFeatures === null || licenseFeatures.includes(feature)
   const navItems = [
     { path: '/', label: '数据看板', icon: LayoutDashboard, show: true },
-    { path: '/projects', label: '项目管理', icon: Briefcase, show: true },
-    { path: '/signed-projects', label: '我签字的项目', icon: PenLine, show: user?.role === 'practitioner' },
-    { path: '/signers', label: '签字人管理', icon: PenLine, show: user?.role === 'admin' || user?.role === 'admin_staff' },
-    { path: '/fiscal-year-configs', label: '编号年度配置', icon: Settings, show: user?.role === 'admin' || user?.role === 'admin_staff' },
-    { path: '/users', label: '用户管理', icon: Users, show: user?.role === 'admin' },
+    { path: '/projects', label: '项目管理', icon: Briefcase, show: canUse('project_management') },
+    { path: '/signed-projects', label: '我签字的项目', icon: PenLine, show: user?.role === 'practitioner' && canUse('signatory_review') },
+    { path: '/signers', label: '签字人管理', icon: PenLine, show: (user?.role === 'admin' || user?.role === 'admin_staff') && canUse('signatory_review') },
+    { path: '/fiscal-year-configs', label: '编号年度配置', icon: Settings, show: (user?.role === 'admin' || user?.role === 'admin_staff') && canUse('fiscal_year_settings') },
+    { path: '/users', label: '用户管理', icon: Users, show: user?.role === 'admin' && canUse('user_management') },
   ].filter(item => item.show)
 
   return (

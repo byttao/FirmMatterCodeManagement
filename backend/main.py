@@ -33,7 +33,7 @@ from report_no_generator import (
     get_available_report_years, get_available_firms, get_available_report_types, get_rule
 )
 from version import APP_VERSION
-from license_client import activate as activate_license, heartbeat as heartbeat_license, license_required, status as license_status
+from license_client import activate as activate_license, configured_server_url, heartbeat as heartbeat_license, license_features, license_required, read_document as read_license_document, require_license_feature, status as license_status
 import asyncio
 
 upgrade_database(engine)
@@ -42,16 +42,23 @@ app = FastAPI(title="业码汇 - 事务所业务编号管理", version=APP_VERSI
 _license_heartbeat_task = None
 
 
+class LicenseCapacityError(HTTPException):
+    """License limit errors should remain readable outside an HTTP request."""
+
+    def __str__(self) -> str:
+        return str(self.detail)
+
+
 async def _license_heartbeat_loop():
     interval = max(300, int(os.getenv("FIRM_MANAGER_LICENSE_HEARTBEAT_SECONDS", "86400")))
     while True:
-        await asyncio.sleep(interval)
-        if license_required() and license_status().get("allowed"):
+        if license_required() and read_license_document() is not None:
             try:
                 await heartbeat_license()
             except Exception:
                 # 本地缓存和宽限期负责短时断网；下次周期继续重试。
                 pass
+        await asyncio.sleep(interval)
 
 
 @app.on_event("startup")
@@ -66,25 +73,76 @@ async def stop_license_heartbeat():
     global _license_heartbeat_task
     if _license_heartbeat_task:
         _license_heartbeat_task.cancel()
+        try:
+            await _license_heartbeat_task
+        except asyncio.CancelledError:
+            pass
         _license_heartbeat_task = None
 
 
 @app.middleware("http")
 async def enforce_license(request: Request, call_next):
     """商用包开启 FIRM_MANAGER_LICENSE_REQUIRED 后强制检查授权。"""
-    if license_required() and request.url.path.startswith("/api/") and not (
-        request.url.path.startswith("/api/license")
-        or request.url.path.startswith("/api/setup")
-    ):
+    if license_required() and request.url.path.startswith("/api/") and request.url.path not in {
+        "/api/license/status",
+        "/api/license/activate",
+        "/api/setup/status",
+        "/api/setup",
+        "/api/auth/login",
+    }:
         current = license_status()
         if not current.get("allowed"):
             return JSONResponse(status_code=402, content={"detail": current.get("reason", "授权不可用"), "license_required": True})
+        # Enforce module-level entitlements at the API boundary so direct API
+        # calls cannot bypass the navigation visibility in the web client.
+        path = request.url.path
+        feature = None
+        if path.startswith("/api/projects/signed-by-me"):
+            feature = "signatory_review"
+        elif "/finance/invoice" in path:
+            feature = "invoice_registration"
+        # The finance ledger uses plural resource names: invoices for billing
+        # and receipts for payments. Keep the entitlement check aligned with
+        # the actual API paths so direct requests cannot bypass the module gate.
+        elif "/finance/payment" in path or "/finance/receipt" in path:
+            feature = "payment_registration"
+        elif path.startswith("/api/projects/") and (path.endswith("/generate-report-no") or path.endswith("/recycle-report-no")):
+            feature = "business_number"
+        elif path.startswith("/api/projects"):
+            feature = "project_management"
+        elif path.startswith("/api/signers"):
+            feature = "signatory_review"
+        elif path.startswith("/api/users"):
+            feature = "user_management"
+        elif path.startswith("/api/numbered-years"):
+            feature = "fiscal_year_settings"
+        elif path.startswith("/api/export"):
+            feature = "data_export"
+        if feature:
+            try:
+                require_license_feature(feature)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "license_required": True})
     return await call_next(request)
 
 
 @app.get("/api/license/status")
 async def get_license_status():
-    return license_status()
+    current = license_status()
+    features = license_features()
+    try:
+        server_url = configured_server_url()
+    except ValueError:
+        server_url = ""
+    return {
+        "required": current.get("required", False),
+        "allowed": current.get("allowed", True),
+        "reason": current.get("reason", ""),
+        "expires_at": current.get("expires_at"),
+        "grace_until": current.get("grace_until"),
+        "server_url": server_url,
+        "features": None if features is None else sorted(features),
+    }
 
 
 @app.post("/api/license/activate")
@@ -458,6 +516,10 @@ async def create_user(
 ):
     if not can_manage_users(current_user):
         raise HTTPException(status_code=403, detail="无权限")
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+    if user_data.role == models.UserRole.PRACTITIONER.value:
+        ensure_license_user_capacity(db)
 
     real_name = user_data.real_name.strip()
     if not real_name:
@@ -492,6 +554,25 @@ def ensure_admin_remains(db: Session, user: models.User, next_role: str, next_ac
             raise HTTPException(status_code=400, detail="必须保留至少一名启用的管理人员")
 
 
+def ensure_license_user_capacity(db: Session, additional: int = 1) -> None:
+    if not license_required():
+        return
+    current = license_status()
+    if not current.get("allowed"):
+        raise LicenseCapacityError(status_code=402, detail=current.get("reason", "授权不可用"))
+    maximum = (current.get("document") or {}).get("max_users")
+    if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 0:
+        raise LicenseCapacityError(status_code=402, detail="授权文件未包含有效的执业人员数量上限")
+    if maximum == 0:
+        return
+    active_users = db.query(models.User).filter_by(
+        is_active=True,
+        role=models.UserRole.PRACTITIONER.value,
+    ).count()
+    if active_users + additional > maximum:
+        raise LicenseCapacityError(status_code=402, detail=f"当前授权最多允许 {maximum} 名启用执业人员")
+
+
 @app.put("/api/users/{user_id}", response_model=schemas.UserResponse)
 async def update_user(
     user_id: int,
@@ -511,6 +592,13 @@ async def update_user(
     next_role = user_data.role if user_data.role is not None else user.role
     next_active = user_data.is_active if user_data.is_active is not None else user.is_active
     ensure_admin_remains(db, user, next_role, next_active)
+    becomes_practitioner = (
+        next_active
+        and next_role == models.UserRole.PRACTITIONER.value
+        and (not user.is_active or user.role != models.UserRole.PRACTITIONER.value)
+    )
+    if becomes_practitioner:
+        ensure_license_user_capacity(db)
 
     if user_data.real_name is not None:
         real_name = user_data.real_name.strip()
@@ -1134,7 +1222,7 @@ async def get_report_number_history(
 
 
 @app.post("/api/projects", response_model=schemas.ProjectResponse)
-async def create_project(
+def create_project(
     project_data: schemas.ProjectCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -1395,7 +1483,7 @@ async def delete_project(
 
 # ==================== 报告编号生成 ====================
 @app.post("/api/projects/{project_id}/generate-report-no")
-async def generate_report_number(
+def generate_report_number(
     project_id: str,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)

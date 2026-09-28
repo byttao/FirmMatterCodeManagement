@@ -5,6 +5,7 @@ path of every business API family and the cross-numbered-year rule: ``fiscal_yea
 is the numbering year while ``report_year`` is the audited business year.
 """
 
+import asyncio
 import importlib
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from io import BytesIO
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from openpyxl import Workbook, load_workbook
@@ -91,6 +93,37 @@ class ComprehensiveDataTest(unittest.IsolatedAsyncioTestCase):
 
         admin = await self.login("office_admin", setup["admin_password"])
         self.assertEqual((await self.client.get("/api/auth/me", headers=admin)).json()["role"], "admin")
+        db = self.main.SessionLocal()
+        try:
+            with patch.object(self.main, "license_required", return_value=True), patch.object(
+                self.main, "license_status", return_value={"allowed": True, "document": {"max_users": 2}},
+            ):
+                self.main.ensure_license_user_capacity(db)
+            with patch.object(self.main, "license_required", return_value=True), patch.object(
+                self.main, "license_status", return_value={"allowed": True, "document": {"max_users": 1}},
+            ):
+                # 初始账号是管理员，不占用执业人员额度；新增第一名执业人员应成功。
+                self.main.ensure_license_user_capacity(db)
+                listed_users = await self.client.get("/api/users", headers=admin)
+                self.assertEqual(listed_users.status_code, 200, listed_users.text)
+                practitioner_create = await self.client.post("/api/users", headers=admin, json={
+                    "username": "limited_practitioner", "password": "strong-password", "real_name": "首名执业人员", "role": "practitioner",
+                })
+                self.assertEqual(practitioner_create.status_code, 200, practitioner_create.text)
+                blocked_create = await self.client.post("/api/users", headers=admin, json={
+                    "username": "over_limit", "password": "strong-password", "real_name": "超额执业人员", "role": "practitioner",
+                })
+                self.assertEqual(blocked_create.status_code, 402, blocked_create.text)
+                staff_create = await self.client.post("/api/users", headers=admin, json={
+                    "username": "back_office", "password": "strong-password", "real_name": "后勤人员", "role": "admin_staff",
+                })
+                self.assertEqual(staff_create.status_code, 200, staff_create.text)
+            with patch.object(self.main, "license_required", return_value=True), patch.object(
+                self.main, "license_status", return_value={"allowed": True, "document": {"max_users": 0}},
+            ):
+                self.main.ensure_license_user_capacity(db)
+        finally:
+            db.close()
         self.assertEqual((await self.client.post("/api/auth/login", json={
             "username": "office_admin", "password": setup["admin_password"], "fiscal_year": 2027,
         })).status_code, 400)
@@ -116,7 +149,7 @@ class ComprehensiveDataTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 200, response.text)
             users[username] = response.json()
         self.assertEqual((await self.client.get("/api/users", headers=admin)).status_code, 200)
-        self.assertEqual(len((await self.client.get("/api/users/practitioners", headers=admin)).json()), 2)
+        self.assertEqual(len((await self.client.get("/api/users/practitioners", headers=admin)).json()), 3)
         self.assertEqual({row["username"] for row in (await self.client.get("/api/users/search", headers=admin, params={"q": "tongming"})).json()}, {"auditor_one", "auditor_two"})
         self.assertEqual({row["username"] for row in (await self.client.get("/api/users/search", headers=admin, params={"q": "同名"})).json()}, {"auditor_one", "auditor_two"})
         staff_auth = await self.login("office_staff", "another-password")
@@ -259,6 +292,26 @@ class ComprehensiveDataTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post("/api/signers/999999/enable", headers=admin)).status_code, 404)
         imported_signer = next(item for item in (await self.client.get("/api/signers", headers=admin)).json() if item["user_id"] == imported_user.json()["id"])
         self.assertEqual((await self.client.delete(f"/api/signers/{imported_signer['id']}", headers=admin)).status_code, 200)
+
+    async def test_license_heartbeat_runs_immediately_on_service_start(self):
+        called = asyncio.Event()
+
+        async def mark_heartbeat():
+            called.set()
+
+        with patch.dict(os.environ, {"FIRM_MANAGER_LICENSE_HEARTBEAT_SECONDS": "300"}), patch.object(
+            self.main, "license_required", return_value=True,
+        ), patch.object(self.main, "license_status", return_value={"allowed": True}), patch.object(
+            self.main, "read_license_document", return_value={"license_id": "YMH-TEST"},
+        ), patch.object(
+            self.main, "heartbeat_license", new_callable=AsyncMock, side_effect=mark_heartbeat,
+        ) as heartbeat:
+            await self.main.start_license_heartbeat()
+            try:
+                await asyncio.wait_for(called.wait(), timeout=1)
+            finally:
+                await self.main.stop_license_heartbeat()
+        heartbeat.assert_awaited_once()
 
     @staticmethod
     def _workbook_bytes(workbook):
