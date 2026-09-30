@@ -62,13 +62,18 @@ export default function SetupWizard() {
     const file = event.target.files?.[0]
     if (!file) return
     try {
-      setLicenseJson(await file.text())
+      const content = await file.text()
+      const parsed = JSON.parse(content)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+      const serverUrl = typeof parsed.server_url === 'string' ? parsed.server_url.trim() : ''
+      setLicenseJson(content)
       setLicenseFileName(file.name)
+      if (serverUrl) setLicenseServerUrl(serverUrl)
       setError('')
     } catch {
       setLicenseJson('')
       setLicenseFileName('')
-      setError('无法读取授权文件')
+      setError('授权文件必须是有效的 JSON 文本')
     }
   }
 
@@ -204,21 +209,21 @@ export default function SetupWizard() {
                   </div>
                   <div className="space-y-3">
                     {firm.report_types.map((report, reportIndex) => (
-                      <div key={reportIndex} className="grid gap-3 rounded-md bg-slate-50 p-3 sm:grid-cols-[0.8fr_1.4fr_0.8fr_auto] sm:items-end">
-                        <div className="space-y-1">
+                      <div key={reportIndex} className="grid gap-3 rounded-md bg-slate-50 p-3 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)_minmax(0,0.8fr)_auto] sm:items-start">
+                        <div className="min-w-0 space-y-1">
                           <Label>业务类型</Label>
                           <Input value={report.report_type} onChange={(e) => updateReportType(firmIndex, reportIndex, 'report_type', e.target.value)} placeholder="例如：年度审计" required />
                         </div>
-                        <div className="space-y-1">
+                        <div className="min-w-0 space-y-1">
                           <Label>编号模板</Label>
                           <Input value={report.template} onChange={(e) => updateReportType(firmIndex, reportIndex, 'template', e.target.value)} placeholder="例如：{yyyy}-审-{nnn}" required />
                           <p className="text-xs text-muted-foreground">预览：{report.template.replace(/\{yyyy\}/g, String(form.fiscal_year)).replace(/\{yy\}/g, String(form.fiscal_year).slice(-2)).replace(/\{(n+)\}/g, (_, digits: string) => '1'.padStart(digits.length, '0'))}</p>
                         </div>
-                        <div className="space-y-1">
+                        <div className="min-w-0 space-y-1">
                           <Label>规则名称</Label>
                           <Input value={report.rule_name || ''} onChange={(e) => updateReportType(firmIndex, reportIndex, 'rule_name', e.target.value)} placeholder="可选" />
                         </div>
-                        <Button type="button" variant="ghost" size="icon" onClick={() => updateFirm(firmIndex, { report_types: firm.report_types.filter((_, index) => index !== reportIndex) })} disabled={firm.report_types.length <= 1} aria-label="删除业务类型"><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                        <Button type="button" variant="ghost" size="icon" className="justify-self-end sm:mt-6 sm:justify-self-auto" onClick={() => updateFirm(firmIndex, { report_types: firm.report_types.filter((_, index) => index !== reportIndex) })} disabled={firm.report_types.length <= 1} aria-label="删除业务类型"><Trash2 className="h-4 w-4 text-destructive" /></Button>
                       </div>
                     ))}
                   </div>
@@ -232,7 +237,7 @@ export default function SetupWizard() {
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2"><KeyRound className="h-5 w-5" />4. 商用授权（按需）</CardTitle>
-              <CardDescription>商用发布包开启授权校验时，请选择授权中心下载的 JSON 文件；开发测试可留空。</CardDescription>
+              <CardDescription>商用发布包开启授权校验时，请选择授权中心下载的 .liscence 文件；开发测试可留空。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
@@ -247,8 +252,8 @@ export default function SetupWizard() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="license_file">授权文件</Label>
-                <Input id="license_file" type="file" accept=".json,application/json" onChange={handleLicenseFile} className="h-auto cursor-pointer py-2" />
-                <p className="text-xs text-muted-foreground">{licenseFileName ? `已选择：${licenseFileName}` : '请选择授权中心下载的 .json 文件'}</p>
+                <Input id="license_file" type="file" accept=".liscence" onChange={handleLicenseFile} className="h-auto cursor-pointer py-2" />
+                <p className="text-xs text-muted-foreground">{licenseFileName ? `已选择：${licenseFileName}` : '请选择授权中心下载的 .liscence 文件'}</p>
               </div>
             </CardContent>
           </Card>
