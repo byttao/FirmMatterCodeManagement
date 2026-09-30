@@ -4,6 +4,7 @@ export type UserRole = 'admin' | 'practitioner' | 'admin_staff'
 export interface User {
   id: number
   username: string
+  phone: string | null
   real_name: string
   role: UserRole
   fiscal_year: number
@@ -14,6 +15,7 @@ export interface User {
 export interface Practitioner {
   id: number
   username: string
+  phone?: string | null
   real_name: string
   role: string
   is_active?: boolean
@@ -48,6 +50,22 @@ export interface LoginRequest {
   fiscal_year?: number
 }
 
+export interface BrandingSettings {
+  short_name: string
+  logo_data: string
+  replace_banner: boolean
+  append_title: boolean
+}
+
+export interface Customer {
+  id: number
+  tax_id: string
+  name: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface LoginResponse {
   access_token: string
   token_type: string
@@ -79,6 +97,7 @@ export interface Project {
   report_no: string | null
   report_no_status: ReportStatus
   customer_name: string
+  customer_tax_id: string | null
   contract_no: string | null
   order_date: string | null
   leader_id: number
@@ -110,6 +129,8 @@ export interface ProjectCreate {
   report_type: string
   report_year: number
   customer_name: string
+  customer_tax_id?: string | null
+  customer_id?: number | null
   contract_no?: string
   order_date?: string
   leader_id: number
@@ -129,6 +150,8 @@ export interface ProjectUpdate {
   report_type?: string
   report_year?: number
   customer_name?: string
+  customer_tax_id?: string | null
+  customer_id?: number | null
   contract_no?: string
   order_date?: string
   leader_id?: number

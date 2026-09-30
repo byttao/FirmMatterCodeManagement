@@ -37,6 +37,13 @@ LICENSE_FEATURE_CODES = {
     "data_export",
 }
 
+TRIAL_LIMITS = {"fiscal_years": 1, "practitioners": 3, "projects": 3}
+
+
+def trial_mode() -> bool:
+    """Release packages opt into a local trial when no signed license exists."""
+    return os.getenv("FIRM_MANAGER_TRIAL_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _version_in_range(version: str, minimum: str | None, maximum: str | None) -> bool:
     def parts(value: str | None) -> tuple[int, ...]:
@@ -170,7 +177,15 @@ def read_document() -> dict[str, Any] | None:
 
 def status() -> dict[str, Any]:
     if not license_required():
-        return {"required": False, "allowed": True, "reason": "开发模式未启用授权强制校验"}
+        if trial_mode():
+            return {
+                "required": False,
+                "allowed": True,
+                "mode": "trial",
+                "reason": "当前为试用模式",
+                "limits": TRIAL_LIMITS.copy(),
+            }
+        return {"required": False, "allowed": True, "mode": "development", "reason": "开发模式未启用授权强制校验"}
     document = read_document()
     if not document:
         return {"required": True, "allowed": False, "reason": "尚未导入授权文件"}

@@ -18,7 +18,7 @@ import {
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
-import { Plus, Search, Trash2, RotateCcw, Eye, Edit } from 'lucide-react'
+import { Plus, Search, Trash2, RotateCcw, Eye, Edit, SlidersHorizontal } from 'lucide-react'
 
 
 
@@ -40,6 +40,21 @@ export default function ProjectList() {
   const [reportType, setReportType] = useState<string>('all')
   const [projectStatus, setProjectStatus] = useState<string>('all')
   const [leaderId, setLeaderId] = useState<string>('all')
+  const [sortBy, setSortBy] = useState('created_at')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const allColumns = [
+    ['project_id', '项目ID'], ['customer_name', '客户名称'], ['customer_tax_id', '税号'],
+    ['firm', '事务所'], ['report_type', '报告类型'], ['report_year', '业务年度'],
+    ['report_no', '报告编号'], ['report_status', '编号状态'], ['leader', '执业负责人'],
+    ['project_status', '项目状态'], ['contract_amount', '合同金额'],
+  ] as const
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('project-columns')
+      return stored ? JSON.parse(stored) : allColumns.map(column => column[0])
+    } catch { return allColumns.map(column => column[0]) }
+  })
+  const showColumn = (key: string) => visibleColumns.includes(key)
 
   // 删除确认
   const [deleteProject, setDeleteProject] = useState<Project | null>(null)
@@ -72,7 +87,7 @@ export default function ProjectList() {
 
   useEffect(() => {
     loadProjects()
-  }, [page, firm, reportType, projectStatus, leaderId])
+  }, [page, firm, reportType, projectStatus, leaderId, sortBy, sortOrder])
 
   useEffect(() => {
     loadUsers()
@@ -102,6 +117,8 @@ export default function ProjectList() {
         report_type: reportType && reportType !== 'all' ? reportType : undefined,
         project_status: projectStatus && projectStatus !== 'all' ? projectStatus : undefined,
         leader_id: leaderId && leaderId !== 'all' ? parseInt(leaderId) : undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder,
       })
       setProjects(res.data.items)
       setTotal(res.data.total)
@@ -267,6 +284,33 @@ export default function ProjectList() {
           </SelectContent>
         </Select>
         <Button variant="outline" onClick={handleSearch}>搜索</Button>
+        <Select value={sortBy} onValueChange={setSortBy}>
+          <SelectTrigger className="w-[140px]"><SelectValue placeholder="排序列" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="created_at">创建时间</SelectItem>
+            <SelectItem value="project_id">项目ID</SelectItem>
+            <SelectItem value="customer_name">客户名称</SelectItem>
+            <SelectItem value="report_year">业务年度</SelectItem>
+            <SelectItem value="contract_amount">合同金额</SelectItem>
+            <SelectItem value="project_status">项目状态</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button variant="outline" onClick={() => setSortOrder(value => value === 'asc' ? 'desc' : 'asc')}>
+          {sortOrder === 'asc' ? '升序' : '降序'}
+        </Button>
+        <details className="relative">
+          <summary className="list-none"><Button type="button" variant="outline"><SlidersHorizontal className="w-4 h-4 mr-2" />显示列</Button></summary>
+          <div className="absolute right-0 z-20 mt-2 w-48 rounded-md border bg-background p-3 shadow-lg space-y-2">
+            {allColumns.map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={showColumn(key)} onChange={e => setVisibleColumns(previous => {
+                  const next = e.target.checked ? [...previous, key] : previous.filter(item => item !== key)
+                  localStorage.setItem('project-columns', JSON.stringify(next)); return next
+                })} />{label}
+              </label>
+            ))}
+          </div>
+        </details>
       </div>
 
       {/* 列表 */}
@@ -274,51 +318,53 @@ export default function ProjectList() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[130px]">项目ID</TableHead>
-              <TableHead>客户名称</TableHead>
-              <TableHead>事务所</TableHead>
-              <TableHead>报告类型</TableHead>
-              <TableHead>业务年度</TableHead>
-              <TableHead>报告编号</TableHead>
-              <TableHead>编号状态</TableHead>
-              <TableHead>执业负责人</TableHead>
-              <TableHead>项目状态</TableHead>
-              <TableHead className="text-right">合同金额</TableHead>
+              {showColumn('project_id') && <TableHead className="w-[130px]">项目ID</TableHead>}
+              {showColumn('customer_name') && <TableHead>客户名称</TableHead>}
+              {showColumn('customer_tax_id') && <TableHead>税号</TableHead>}
+              {showColumn('firm') && <TableHead>事务所</TableHead>}
+              {showColumn('report_type') && <TableHead>报告类型</TableHead>}
+              {showColumn('report_year') && <TableHead>业务年度</TableHead>}
+              {showColumn('report_no') && <TableHead>报告编号</TableHead>}
+              {showColumn('report_status') && <TableHead>编号状态</TableHead>}
+              {showColumn('leader') && <TableHead>执业负责人</TableHead>}
+              {showColumn('project_status') && <TableHead>项目状态</TableHead>}
+              {showColumn('contract_amount') && <TableHead className="text-right">合同金额</TableHead>}
               <TableHead className="w-[150px]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={11} className="text-center py-8">
+                <TableCell colSpan={visibleColumns.length + 1} className="text-center py-8">
                   加载中...
                 </TableCell>
               </TableRow>
             ) : projects.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={visibleColumns.length + 1} className="text-center py-8 text-muted-foreground">
                   暂无项目
                 </TableCell>
               </TableRow>
             ) : (
               projects.map((project) => (
                 <TableRow key={project.id}>
-                  <TableCell className="font-mono text-sm">{project.project_id}</TableCell>
-                  <TableCell>{project.customer_name}</TableCell>
-                  <TableCell>{project.firm}</TableCell>
-                  <TableCell>{project.report_type}</TableCell>
-                  <TableCell>{project.report_year} 年</TableCell>
-                  <TableCell className="font-mono text-sm">
+                  {showColumn('project_id') && <TableCell className="font-mono text-sm">{project.project_id}</TableCell>}
+                  {showColumn('customer_name') && <TableCell>{project.customer_name}</TableCell>}
+                  {showColumn('customer_tax_id') && <TableCell className="font-mono text-xs">{project.customer_tax_id || '-'}</TableCell>}
+                  {showColumn('firm') && <TableCell>{project.firm}</TableCell>}
+                  {showColumn('report_type') && <TableCell>{project.report_type}</TableCell>}
+                  {showColumn('report_year') && <TableCell>{project.report_year} 年</TableCell>}
+                  {showColumn('report_no') && <TableCell className="font-mono text-sm">
                     {project.report_no || '-'}
-                  </TableCell>
-                  <TableCell>
+                  </TableCell>}
+                  {showColumn('report_status') && <TableCell>
                     <Badge variant={getStatusVariant(project.report_no_status)}>
                       {project.report_no_status === 'pending' ? '待编号' :
                        project.report_no_status === 'assigned' ? '已编号' : '已回收'}
                     </Badge>
-                  </TableCell>
-                  <TableCell>{project.leader ? getUserDisplayName(project.leader) : '-'}</TableCell>
-                  <TableCell>
+                  </TableCell>}
+                  {showColumn('leader') && <TableCell>{project.leader ? getUserDisplayName(project.leader) : '-'}</TableCell>}
+                  {showColumn('project_status') && <TableCell>
                     <Badge variant={
                       project.project_status === '进行中' ? 'default' :
                       project.project_status === '已完成' ? 'success' :
@@ -326,10 +372,10 @@ export default function ProjectList() {
                     }>
                       {project.project_status}
                     </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
+                  </TableCell>}
+                  {showColumn('contract_amount') && <TableCell className="text-right">
                     {formatCurrency(project.contract_amount)}
-                  </TableCell>
+                  </TableCell>}
                   <TableCell>
                     <div className="flex items-center gap-1">
                       <Button

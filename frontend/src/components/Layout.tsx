@@ -1,12 +1,12 @@
 import { useNavigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
-import { licenseApi, userApi } from '@/api/auth'
+import { brandingApi, licenseApi, userApi } from '@/api/auth'
 import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { ROLE_LABELS, getUserDisplayName } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { LayoutDashboard, Briefcase, Users, LogOut, Menu, X, Calendar, PenLine, Settings } from 'lucide-react'
+import { LayoutDashboard, Briefcase, Users, LogOut, Menu, X, Calendar, PenLine, Settings, ShieldCheck, Building2 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { version as APP_VERSION } from '../../package.json'
 
@@ -17,6 +17,8 @@ export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [availableYears, setAvailableYears] = useState<number[]>([])
   const [licenseFeatures, setLicenseFeatures] = useState<string[] | null>(null)
+  const [license, setLicense] = useState<{ mode: string; reason: string; limits: Record<string, number> | null; expires_at?: string }>({ mode: 'development', reason: '', limits: null })
+  const [branding, setBranding] = useState({ short_name: '', logo_data: '', replace_banner: false, append_title: false })
 
   useEffect(() => {
     // 获取可选的年度列表（从API获取）
@@ -39,7 +41,12 @@ export default function Layout() {
   }, [])
 
   useEffect(() => {
-    licenseApi.status().then(({ data }) => setLicenseFeatures(data.features)).catch(() => setLicenseFeatures(null))
+    Promise.all([licenseApi.status(), brandingApi.public()]).then(([licenseRes, brandingRes]) => {
+      setLicenseFeatures(licenseRes.data.features)
+      setLicense(licenseRes.data)
+      setBranding(brandingRes.data)
+      if (brandingRes.data.append_title && brandingRes.data.short_name) document.title = `业码汇 - ${brandingRes.data.short_name}`
+    }).catch(() => undefined)
   }, [])
 
   const handleYearChange = async (newYear: string) => {
@@ -77,6 +84,8 @@ export default function Layout() {
     { path: '/signers', label: '签字人管理', icon: PenLine, show: (user?.role === 'admin' || user?.role === 'admin_staff') && canUse('signatory_review') },
     { path: '/fiscal-year-configs', label: '编号年度配置', icon: Settings, show: (user?.role === 'admin' || user?.role === 'admin_staff') && canUse('fiscal_year_settings') },
     { path: '/users', label: '用户管理', icon: Users, show: user?.role === 'admin' && canUse('user_management') },
+    { path: '/license', label: '授权与品牌', icon: ShieldCheck, show: user?.role === 'admin' },
+    { path: '/customers', label: '客户管理', icon: Building2, show: user?.role === 'admin' },
   ].filter(item => item.show)
 
   return (
@@ -93,7 +102,12 @@ export default function Layout() {
             >
               {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </Button>
-            <img src="/branding/yemahui-banner-small.png" alt="业码汇" className="h-10 w-auto max-w-[180px] object-contain" />
+            {branding.replace_banner && branding.logo_data ? (
+              <img src={branding.logo_data} alt={branding.short_name || '业码汇'} className="h-10 w-auto max-w-[180px] object-contain" />
+            ) : (
+              <img src="/branding/yemahui-banner-small.png" alt="业码汇" className="h-10 w-auto max-w-[180px] object-contain" />
+            )}
+            {branding.short_name && <span className="text-sm font-medium text-muted-foreground">{branding.short_name}</span>}
           </div>
 
           <div className="flex items-center gap-4">
@@ -154,7 +168,8 @@ export default function Layout() {
           </nav>
           {/* 版本信息 */}
           <div className="absolute bottom-4 left-4 text-xs text-muted-foreground">
-            v{APP_VERSION}
+            v{APP_VERSION} · 业码汇 · <a className="hover:underline" href="https://github.com/byttao/FirmMatterCodeManagement" target="_blank" rel="noreferrer">GitHub</a>
+            {license.mode === 'trial' && <span className="block text-amber-600">试用中</span>}
           </div>
         </aside>
 

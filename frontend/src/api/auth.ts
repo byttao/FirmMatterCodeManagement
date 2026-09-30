@@ -4,6 +4,7 @@ import type {
   Project, ProjectCreate, ProjectUpdate, ProjectListResponse,
   DashboardStats, User as UserType, Signer, SignerCreate, FinanceKind, FinancialEntry, FinancialEntryInput,
   ReportNumberHistory
+  , BrandingSettings, Customer
 } from '@/types'
 
 const api = axios.create({
@@ -39,7 +40,20 @@ export const authApi = {
 }
 
 export const licenseApi = {
-  status: () => api.get<{ required: boolean; allowed: boolean; reason: string; features: string[] | null }>('/license/status'),
+  status: () => api.get<{ required: boolean; allowed: boolean; reason: string; mode: string; limits: Record<string, number> | null; expires_at?: string; license_id?: string; features: string[] | null }>('/license/status'),
+  activate: (data: { license_document: Record<string, unknown>; server_url?: string; instance_name?: string }) => api.post('/license/activate', data),
+}
+
+export const brandingApi = {
+  public: () => api.get<BrandingSettings>('/public/branding'),
+  get: () => api.get<BrandingSettings>('/settings/branding'),
+  update: (data: BrandingSettings) => api.put<BrandingSettings>('/settings/branding', data),
+}
+
+export const customerApi = {
+  list: (search?: string, include_disabled = false) => api.get<Customer[]>('/customers', { params: { search, include_disabled } }),
+  create: (data: { tax_id: string; name: string }) => api.post<Customer>('/customers', data),
+  update: (id: number, data: { name: string }) => api.put<Customer>(`/customers/${id}`, data),
 }
 
 // 用户管理 API
@@ -47,9 +61,9 @@ export const userApi = {
   list: (include_disabled = false) => api.get<UserType[]>('/users', { params: { include_disabled } }),
   listPractitioners: () => api.get<{ id: number; username: string; real_name: string; role: string }[]>('/users/practitioners'),
   search: (q: string) => api.get<{ id: number; username: string; real_name: string; role: string }[]>('/users/search', { params: { q } }),
-  create: (data: { username: string; password: string; real_name: string; role: string }) =>
+  create: (data: { username: string; phone?: string; password: string; real_name: string; role: string }) =>
     api.post<UserType>('/users', data),
-  update: (id: number, data: Partial<{ real_name: string; role: string; password: string; is_active: boolean }>) =>
+  update: (id: number, data: Partial<{ real_name: string; phone: string | null; role: string; password: string; is_active: boolean }>) =>
     api.put<UserType>(`/users/${id}`, data),
   delete: (id: number) => api.delete(`/users/${id}`),
   getFiscalYear: () => api.get<{ fiscal_year: number }>('/users/current-fiscal-year'),
@@ -67,6 +81,9 @@ export const projectApi = {
     project_status?: string
     leader_id?: number
     report_year?: number
+    sort_by?: string
+    sort_order?: 'asc' | 'desc'
+    sort?: string
   }) => api.get<ProjectListResponse>('/projects', { params }),
 
   signedByMe: (page = 1) => api.get<ProjectListResponse>('/projects/signed-by-me', { params: { page } }),

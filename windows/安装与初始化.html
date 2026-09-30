@@ -44,7 +44,7 @@
       <div class="steps">
         <div class="step"><span class="number">1</span><h3>解压完整安装包</h3><p>将 ZIP 解压到固定位置，例如 <code>C:\FirmMatterCodeManagement</code>。请保留全部文件，不要只复制 EXE。</p></div>
         <div class="step"><span class="number">2</span><h3>打开管理工具</h3><p>双击 <code>Manager.exe</code>，接受 Windows 管理员权限提示。管理工具会安装开机自启的系统服务。</p></div>
-        <div class="step"><span class="number">3</span><h3>一键启动</h3><p>选择监听范围和端口，填写可选的外部 IP 或域名，点击“一键启动”。工具会配置入站防火墙并打开本机页面。</p></div>
+        <div class="step"><span class="number">3</span><h3>一键启动</h3><p>默认监听 <code>0.0.0.0:8000</code>，无需手动修改即可通过本机、局域网 IP 或公网 IP 访问。需要时再调整监听范围和端口，工具会配置入站防火墙并打开本机页面。</p></div>
       </div>
       <div class="note">首次启用必须在服务器本机完成。通过远程桌面登录服务器后，让管理工具打开 <code>127.0.0.1:端口/setup</code>。安装完成后其他电脑才能按权限登录。</div>
     </section>
@@ -63,10 +63,10 @@
     <section>
       <h2>访问地址</h2>
       <table>
-        <tr><th>监听范围</th><td><code>127.0.0.1</code> 只供服务器本机访问；<code>0.0.0.0</code> 允许通过服务器 IP 或已解析域名访问。</td></tr>
+        <tr><th>监听范围</th><td><code>127.0.0.1</code> 只供服务器本机访问；<code>0.0.0.0</code> 允许通过服务器本机、局域网 IP 或公网 IP 访问，发布包默认使用此值。</td></tr>
         <tr><th>端口</th><td>默认 <code>8000</code>。管理工具会为所选端口设置 Windows 入站防火墙规则。</td></tr>
         <tr><th>外部 IP 或域名</th><td>填写服务器 IP 或域名，不含 <code>http://</code> 和端口。域名须提前配置 DNS；跨公网还需配置云安全组或路由器端口转发。</td></tr>
-        <tr><th>HTTPS</th><td>管理工具提供 HTTP 服务。通过公网处理业务数据时，请在服务前配置 HTTPS 反向代理，并避免直接暴露 HTTP 登录页面。</td></tr>
+        <tr><th>HTTPS</th><td>管理工具提供 HTTP 服务，不包含 HTTPS。公网处理业务数据时请放行主机防火墙、云安全组或路由器端口转发；敏感业务建议另行配置 HTTPS 反向代理。</td></tr>
       </table>
       <p>管理工具中的“检测外部地址”从服务器本机发起请求；其他网络的可达性仍需从对应客户端确认。</p>
     </section>

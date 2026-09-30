@@ -24,6 +24,8 @@ def main() -> None:
         if public_key:
             os.environ["FIRM_MANAGER_LICENSE_PUBLIC_KEY"] = public_key
             os.environ["FIRM_MANAGER_LICENSE_REQUIRED"] = "1"
+    else:
+        os.environ["FIRM_MANAGER_TRIAL_MODE"] = "1"
 
     if getattr(sys, "frozen", False):
         os.environ["FIRM_MANAGER_STATIC_DIR"] = str(Path(sys._MEIPASS) / "static")

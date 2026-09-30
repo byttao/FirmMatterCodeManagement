@@ -37,6 +37,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, index=True, nullable=False)
+    phone = Column(String(30), unique=True, index=True, nullable=True)
     hashed_password = Column(String(255), nullable=False)
     real_name = Column(String(100), nullable=False)
     role = Column(String(20), nullable=False, default=UserRole.PRACTITIONER.value)
@@ -63,6 +64,8 @@ class Project(Base):
     report_no_status = Column(String(20), default=ReportStatus.PENDING.value)  # pending/assigned/recycled
 
     customer_name = Column(String(200), nullable=False)  # 客户名称
+    customer_tax_id = Column(String(50), nullable=True, index=True)  # 统一社会信用代码/税号
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True, index=True)
     contract_no = Column(String(100))  # 合同号
     order_date = Column(DateTime)  # 下单时间
 
@@ -97,6 +100,7 @@ class Project(Base):
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
     financial_entries = relationship("FinancialEntry", back_populates="project", cascade="all, delete-orphan")
     report_number_history = relationship("ReportNumberHistory", back_populates="project")
+    customer = relationship("Customer", back_populates="projects")
 
     @property
     def uninvoiced(self):
@@ -105,6 +109,47 @@ class Project(Base):
     @property
     def unreceived(self):
         return self.invoiced_amount - self.received_amount
+
+
+class Customer(Base):
+    """客户主体主数据；税号稳定，名称变更记录在 aliases。"""
+    __tablename__ = "customers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tax_id = Column(String(50), nullable=False, unique=True, index=True)
+    name = Column(String(200), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    projects = relationship("Project", back_populates="customer")
+    aliases = relationship("CustomerAlias", back_populates="customer", cascade="all, delete-orphan")
+
+
+class CustomerAlias(Base):
+    __tablename__ = "customer_aliases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    valid_from = Column(DateTime, server_default=func.now())
+    valid_to = Column(DateTime, nullable=True)
+
+    customer = relationship("Customer", back_populates="aliases")
+
+    __table_args__ = (Index("uq_customer_alias_name", "customer_id", "name", unique=True),)
+
+
+class OtpChallenge(Base):
+    __tablename__ = "otp_challenges"
+
+    id = Column(Integer, primary_key=True, index=True)
+    phone = Column(String(30), nullable=False, index=True)
+    code_hash = Column(String(128), nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    consumed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
 
 
 class ProjectMember(Base):
@@ -235,3 +280,12 @@ class FiscalYearReportType(Base):
     __table_args__ = (
         Index('idx_rpt_unique', 'fiscal_year_firm_id', 'report_type', unique=True),
     )
+
+
+class AppSetting(Base):
+    """Small installation-scoped settings such as branding preferences."""
+    __tablename__ = "app_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False, default="{}")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

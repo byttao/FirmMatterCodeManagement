@@ -85,11 +85,83 @@ def _migrate_finance(connection: Connection) -> None:
         db.flush()
 
 
+def _migrate_identity_and_settings(connection: Connection) -> None:
+    user_columns = {column["name"] for column in inspect(connection).get_columns("users")}
+    if "phone" not in user_columns:
+        connection.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(30)"))
+    project_columns = {column["name"] for column in inspect(connection).get_columns("projects")}
+    if "customer_tax_id" not in project_columns:
+        connection.execute(text("ALTER TABLE projects ADD COLUMN customer_tax_id VARCHAR(50)"))
+    connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_phone ON users (phone)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_projects_customer_tax_id ON projects (customer_tax_id)"))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key VARCHAR(100) PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '{}',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+
+
+def _migrate_customers_and_otp(connection: Connection) -> None:
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY,
+            tax_id VARCHAR(50) NOT NULL UNIQUE,
+            name VARCHAR(200) NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    project_columns = {column["name"] for column in inspect(connection).get_columns("projects")}
+    if "customer_id" not in project_columns:
+        connection.execute(text("ALTER TABLE projects ADD COLUMN customer_id INTEGER REFERENCES customers(id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_projects_customer_id ON projects (customer_id)"))
+    connection.execute(text("""
+        INSERT OR IGNORE INTO customers (tax_id, name)
+        SELECT customer_tax_id, MAX(customer_name)
+        FROM projects
+        WHERE customer_tax_id IS NOT NULL AND TRIM(customer_tax_id) <> ''
+        GROUP BY customer_tax_id
+    """))
+    connection.execute(text("""
+        UPDATE projects SET customer_id = (
+            SELECT id FROM customers WHERE customers.tax_id = projects.customer_tax_id
+        ) WHERE customer_id IS NULL AND customer_tax_id IS NOT NULL
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS customer_aliases (
+            id INTEGER PRIMARY KEY,
+            customer_id INTEGER NOT NULL REFERENCES customers(id),
+            name VARCHAR(200) NOT NULL,
+            valid_from DATETIME DEFAULT CURRENT_TIMESTAMP,
+            valid_to DATETIME,
+            CONSTRAINT uq_customer_alias_name UNIQUE (customer_id, name)
+        )
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS otp_challenges (
+            id INTEGER PRIMARY KEY,
+            phone VARCHAR(30) NOT NULL,
+            code_hash VARCHAR(128) NOT NULL,
+            expires_at DATETIME NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            consumed_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_otp_phone ON otp_challenges(phone)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_otp_expires_at ON otp_challenges(expires_at)"))
+
+
 MIGRATIONS = (
     (1, _create_schema),
     (2, _migrate_signer_accounts),
     (3, _migrate_finance),
     (4, backfill_report_number_history),
+    (5, _migrate_identity_and_settings),
+    (6, _migrate_customers_and_otp),
 )
 
 

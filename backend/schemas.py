@@ -6,6 +6,7 @@ from datetime import datetime, date
 # ============ 用户相关 ============
 class UserBase(BaseModel):
     username: str
+    phone: Optional[str] = None
     real_name: str
     role: str
 
@@ -28,6 +29,7 @@ class UserResponse(UserBase):
 
 class UserUpdate(BaseModel):
     real_name: Optional[str] = None
+    phone: Optional[str] = None
     role: Optional[Literal["admin", "practitioner", "admin_staff"]] = None
     password: Optional[constr(min_length=8)] = None
     is_active: Optional[bool] = None
@@ -37,6 +39,7 @@ class PractitionerResponse(BaseModel):
     """执业人员简单信息（用于项目表单选择）"""
     id: int
     username: str
+    phone: Optional[str] = None
     real_name: str
     role: str
     is_active: bool
@@ -96,10 +99,48 @@ class UserLogin(BaseModel):
     fiscal_year: Optional[int] = None  # 登录时可选指定年度，不指定则用当前年
 
 
+class OtpRequest(BaseModel):
+    phone: constr(min_length=7, max_length=30)
+
+
+class OtpLogin(BaseModel):
+    phone: constr(min_length=7, max_length=30)
+    code: constr(min_length=4, max_length=8)
+    fiscal_year: Optional[int] = None
+
+
+class CustomerCreate(BaseModel):
+    tax_id: constr(min_length=1, max_length=50)
+    name: constr(min_length=1, max_length=200)
+
+
+class CustomerUpdate(BaseModel):
+    name: constr(min_length=1, max_length=200)
+
+
+class CustomerResponse(BaseModel):
+    id: int
+    tax_id: str
+    name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
 class LicenseActivationRequest(BaseModel):
     license_document: dict
     server_url: Optional[str] = None
     instance_name: Optional[str] = None
+
+
+class BrandingSettings(BaseModel):
+    short_name: str = ""
+    logo_data: str = ""
+    replace_banner: bool = False
+    append_title: bool = False
 
 
 # ============ 首次安装 ============
@@ -151,6 +192,8 @@ class ProjectBase(BaseModel):
     report_type: str
     report_year: int
     customer_name: str
+    customer_tax_id: Optional[str] = None
+    customer_id: Optional[int] = None
     contract_no: Optional[str] = None
     order_date: Optional[datetime] = None
     project_status: str = "进行中"
@@ -179,6 +222,8 @@ class ProjectUpdate(BaseModel):
     report_type: Optional[str] = None
     report_year: Optional[int] = None
     customer_name: Optional[str] = None
+    customer_tax_id: Optional[str] = None
+    customer_id: Optional[int] = None
     contract_no: Optional[str] = None
     order_date: Optional[datetime] = None
     leader_id: Optional[int] = None

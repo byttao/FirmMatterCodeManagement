@@ -134,11 +134,13 @@ class Manager(tk.Tk):
         self.status = tk.StringVar(value="正在检查服务...")
         self.local_address = tk.StringVar(value=core.local_url(self.config))
         self.external_address = tk.StringVar(value=core.public_url(self.config) or "未设置")
+        self.license_status = tk.StringVar(value="授权状态：检查中...")
         self.update_status = tk.StringVar(value=f"当前版本 v{self.version}")
         self._build()
         self.after(100, self._poll_events)
         self.after(200, self._poll_status)
         self.after(1000, self._check_update)
+        self.after(1500, self._refresh_license)
         self._show_last_result()
 
     def _build(self) -> None:
@@ -148,22 +150,23 @@ class Manager(tk.Tk):
 
         ttk.Label(outer, text="服务器管理", font=("Microsoft YaHei UI", 17, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(outer, textvariable=self.status).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 18))
+        ttk.Label(outer, textvariable=self.license_status, foreground="#8a5a00", wraplength=620).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 12))
 
-        ttk.Label(outer, text="监听范围").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(outer, text="监听范围").grid(row=3, column=0, sticky="w", pady=5)
         bind_select = ttk.Combobox(outer, textvariable=self.bind_host, state="readonly", width=24)
         bind_select["values"] = ("0.0.0.0", "127.0.0.1")
-        bind_select.grid(row=2, column=1, sticky="w", pady=5)
-        ttk.Label(outer, text="0.0.0.0 允许局域网访问").grid(row=2, column=2, sticky="w")
+        bind_select.grid(row=3, column=1, sticky="w", pady=5)
+        ttk.Label(outer, text="0.0.0.0 允许局域网访问").grid(row=3, column=2, sticky="w")
 
-        ttk.Label(outer, text="端口").grid(row=3, column=0, sticky="w", pady=5)
-        ttk.Entry(outer, textvariable=self.port, width=26).grid(row=3, column=1, sticky="w", pady=5)
+        ttk.Label(outer, text="端口").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Entry(outer, textvariable=self.port, width=26).grid(row=4, column=1, sticky="w", pady=5)
 
-        ttk.Label(outer, text="外部 IP 或域名").grid(row=4, column=0, sticky="w", pady=5)
-        ttk.Entry(outer, textvariable=self.public_host, width=34).grid(row=4, column=1, sticky="ew", pady=5)
-        ttk.Label(outer, text="DNS 需指向本服务器").grid(row=4, column=2, sticky="w", padx=(8, 0))
+        ttk.Label(outer, text="外部 IP 或域名").grid(row=5, column=0, sticky="w", pady=5)
+        ttk.Entry(outer, textvariable=self.public_host, width=34).grid(row=5, column=1, sticky="ew", pady=5)
+        ttk.Label(outer, text="DNS 需指向本服务器").grid(row=5, column=2, sticky="w", padx=(8, 0))
 
         actions = ttk.Frame(outer)
-        actions.grid(row=5, column=0, columnspan=3, sticky="w", pady=(18, 18))
+        actions.grid(row=6, column=0, columnspan=3, sticky="w", pady=(18, 18))
         self.start_button = ttk.Button(actions, text="一键启动", command=self._start)
         self.start_button.pack(side="left")
         self.stop_button = ttk.Button(actions, text="停止服务", command=self._stop)
@@ -171,17 +174,17 @@ class Manager(tk.Tk):
         ttk.Button(actions, text="打开本机页面", command=self._open_local).pack(side="left")
         ttk.Button(actions, text="检测外部地址", command=self._check_external).pack(side="left", padx=8)
 
-        ttk.Separator(outer).grid(row=6, column=0, columnspan=3, sticky="ew", pady=(0, 15))
-        ttk.Label(outer, text="本机地址").grid(row=7, column=0, sticky="w", pady=4)
-        ttk.Label(outer, textvariable=self.local_address).grid(row=7, column=1, columnspan=2, sticky="w")
-        ttk.Label(outer, text="外部地址").grid(row=8, column=0, sticky="w", pady=4)
-        ttk.Label(outer, textvariable=self.external_address).grid(row=8, column=1, columnspan=2, sticky="w")
+        ttk.Separator(outer).grid(row=7, column=0, columnspan=3, sticky="ew", pady=(0, 15))
+        ttk.Label(outer, text="本机地址").grid(row=8, column=0, sticky="w", pady=4)
+        ttk.Label(outer, textvariable=self.local_address).grid(row=8, column=1, columnspan=2, sticky="w")
+        ttk.Label(outer, text="外部地址").grid(row=9, column=0, sticky="w", pady=4)
+        ttk.Label(outer, textvariable=self.external_address).grid(row=9, column=1, columnspan=2, sticky="w")
 
-        ttk.Separator(outer).grid(row=9, column=0, columnspan=3, sticky="ew", pady=(16, 15))
-        ttk.Label(outer, text="版本升级", font=("Microsoft YaHei UI", 11, "bold")).grid(row=10, column=0, columnspan=3, sticky="w")
-        ttk.Label(outer, textvariable=self.update_status).grid(row=11, column=0, columnspan=3, sticky="w", pady=(6, 10))
+        ttk.Separator(outer).grid(row=10, column=0, columnspan=3, sticky="ew", pady=(16, 15))
+        ttk.Label(outer, text="版本升级", font=("Microsoft YaHei UI", 11, "bold")).grid(row=11, column=0, columnspan=3, sticky="w")
+        ttk.Label(outer, textvariable=self.update_status).grid(row=12, column=0, columnspan=3, sticky="w", pady=(6, 10))
         update_actions = ttk.Frame(outer)
-        update_actions.grid(row=12, column=0, columnspan=3, sticky="w")
+        update_actions.grid(row=13, column=0, columnspan=3, sticky="w")
         self.check_button = ttk.Button(update_actions, text="检查更新", command=self._check_update)
         self.check_button.pack(side="left")
         self.update_button = ttk.Button(update_actions, text="安装新版", command=self._install_update, state="disabled")
@@ -190,8 +193,20 @@ class Manager(tk.Tk):
 
         self.message = tk.StringVar(value="关闭管理工具不会停止后台服务。")
         ttk.Label(outer, textvariable=self.message, wraplength=620, foreground="#555555").grid(
-            row=13, column=0, columnspan=3, sticky="w", pady=(22, 0)
+            row=14, column=0, columnspan=3, sticky="w", pady=(22, 0)
         )
+
+    def _refresh_license(self) -> None:
+        value = core.license_status(self.config)
+        if value is None:
+            self.license_status.set("授权状态：服务未响应")
+        else:
+            mode = {"trial": "试用中", "licensed": "已授权", "development": "开发模式"}.get(value.get("mode"), value.get("mode", "未知"))
+            detail = value.get("reason") or "正常"
+            limits = value.get("limits") or {}
+            suffix = f"；上限：年度 {limits.get('fiscal_years')}、执业人员 {limits.get('practitioners')}、项目 {limits.get('projects')}" if mode == "试用中" else ""
+            self.license_status.set(f"授权状态：{mode}；{detail}{suffix}")
+        self.after(15000, self._refresh_license)
 
     def _run_background(self, task, on_success) -> None:
         def worker():

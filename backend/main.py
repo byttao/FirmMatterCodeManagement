@@ -7,6 +7,9 @@ from datetime import timedelta, datetime
 from typing import Optional, List
 import os
 import re
+import json
+import hashlib
+import secrets
 from pathlib import Path
 from pypinyin import lazy_pinyin, Style
 from io import BytesIO
@@ -33,7 +36,8 @@ from report_no_generator import (
     get_available_report_years, get_available_firms, get_available_report_types, get_rule
 )
 from version import APP_VERSION
-from license_client import activate as activate_license, configured_server_url, heartbeat as heartbeat_license, license_features, license_required, read_document as read_license_document, require_license_feature, status as license_status
+from license_client import activate as activate_license, configured_server_url, heartbeat as heartbeat_license, license_features, license_required, trial_mode, TRIAL_LIMITS, read_document as read_license_document, require_license_feature, status as license_status
+from otp import normalize_phone, generate_code, hash_code, send_sms_code
 import asyncio
 
 upgrade_database(engine)
@@ -89,6 +93,8 @@ async def enforce_license(request: Request, call_next):
         "/api/setup/status",
         "/api/setup",
         "/api/auth/login",
+        "/api/auth/otp/request",
+        "/api/auth/otp/login",
     }:
         current = license_status()
         if not current.get("allowed"):
@@ -142,6 +148,10 @@ async def get_license_status():
         "grace_until": current.get("grace_until"),
         "server_url": server_url,
         "features": None if features is None else sorted(features),
+        "mode": current.get("mode", "licensed" if current.get("required") else "development"),
+        "limits": current.get("limits"),
+        "license_id": (current.get("document") or {}).get("license_id"),
+        "license_type": (current.get("document") or {}).get("license_type"),
     }
 
 
@@ -152,6 +162,55 @@ async def activate_license_file(data: schemas.LicenseActivationRequest):
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return result
+
+
+def _get_setting(db: Session, key: str, default: dict) -> dict:
+    row = db.get(models.AppSetting, key)
+    if not row:
+        return default.copy()
+    try:
+        value = json.loads(row.value)
+        return value if isinstance(value, dict) else default.copy()
+    except (TypeError, ValueError):
+        return default.copy()
+
+
+def _set_setting(db: Session, key: str, value: dict) -> None:
+    row = db.get(models.AppSetting, key)
+    encoded = json.dumps(value, ensure_ascii=False)
+    if row:
+        row.value = encoded
+    else:
+        db.add(models.AppSetting(key=key, value=encoded))
+
+
+@app.get("/api/public/branding")
+async def get_public_branding(db: Session = Depends(get_db)):
+    return _get_setting(db, "branding", {
+        "short_name": "",
+        "logo_data": "",
+        "replace_banner": False,
+        "append_title": False,
+    })
+
+
+@app.get("/api/settings/branding")
+async def get_branding(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="无权限")
+    return await get_public_branding(db)
+
+
+@app.put("/api/settings/branding")
+async def update_branding(data: schemas.BrandingSettings, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="无权限")
+    if data.logo_data and len(data.logo_data) > 1_500_000:
+        raise HTTPException(status_code=400, detail="LOGO 文件不能超过 1.5 MB")
+    settings = data.dict()
+    _set_setting(db, "branding", settings)
+    db.commit()
+    return settings
 
 MIN_CONFIG_YEAR = 2000
 MAX_CONFIG_YEAR = 2100
@@ -345,12 +404,37 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
 
 
 # ==================== 认证相关 ====================
+def issue_user_token(user: models.User, fiscal_year: int) -> dict:
+    access_token = create_access_token(
+        data={
+            "user_id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "fiscal_year": fiscal_year,
+        },
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    return {"access_token": access_token, "token_type": "bearer", "fiscal_year": fiscal_year}
+
+
+def configured_fiscal_year(db: Session, user: models.User, requested: int | None) -> int:
+    fiscal_year = requested or user.fiscal_year or datetime.now().year
+    configured_years = [row[0] for row in db.query(models.FiscalYear.year).order_by(models.FiscalYear.year.desc()).all()]
+    if fiscal_year not in configured_years:
+        if requested is not None:
+            raise HTTPException(status_code=400, detail="该编号年度尚未配置")
+        if configured_years:
+            fiscal_year = configured_years[0]
+    return fiscal_year
+
+
 @app.post("/api/auth/login", response_model=schemas.Token)
 async def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
     if not is_system_initialized(db):
         raise HTTPException(status_code=428, detail="系统尚未完成首次安装，请先完成安装向导")
+    identifier = form_data.username.strip()
     user = db.query(models.User).filter(
-        models.User.username == form_data.username,
+        or_(models.User.username == identifier, models.User.phone == identifier),
         models.User.is_active == True
     ).first()
 
@@ -360,31 +444,68 @@ async def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
             detail="用户名或密码错误"
         )
 
-    # 确定操作年度：如果登录时指定了年度，使用指定年度；否则使用用户保存的年度或当前年份
-    fiscal_year = form_data.fiscal_year or user.fiscal_year or datetime.now().year
-    configured_years = [row[0] for row in db.query(models.FiscalYear.year).order_by(models.FiscalYear.year.desc()).all()]
-    if fiscal_year not in configured_years:
-        if form_data.fiscal_year is not None:
-            raise HTTPException(status_code=400, detail="该编号年度尚未配置")
-        if configured_years:
-            fiscal_year = configured_years[0]
+    fiscal_year = configured_fiscal_year(db, user, form_data.fiscal_year)
 
     # 更新用户的当前操作年度
     if user.fiscal_year != fiscal_year:
         user.fiscal_year = fiscal_year
         db.commit()
 
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={
-            "user_id": user.id,
-            "username": user.username,
-            "role": user.role,
-            "fiscal_year": fiscal_year
-        },
-        expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer", "fiscal_year": fiscal_year}
+    return issue_user_token(user, fiscal_year)
+
+
+@app.post("/api/auth/otp/request")
+async def request_otp(data: schemas.OtpRequest, db: Session = Depends(get_db)):
+    try:
+        phone = normalize_phone(data.phone)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    now = datetime.utcnow()
+    recent = db.query(models.OtpChallenge).filter(
+        models.OtpChallenge.phone == phone,
+        models.OtpChallenge.created_at >= now - timedelta(seconds=60),
+    ).first()
+    if recent:
+        raise HTTPException(status_code=429, detail="验证码发送过于频繁，请稍后再试")
+    user = db.query(models.User).filter(models.User.phone == phone, models.User.is_active == True).first()
+    # 对不存在账号也返回同一提示，避免通过接口枚举手机号。
+    if user:
+        code = generate_code()
+        db.add(models.OtpChallenge(phone=phone, code_hash=hash_code(phone, code), expires_at=now + timedelta(minutes=5)))
+        db.commit()
+        delivery = send_sms_code(phone, code)
+    else:
+        delivery = "not_configured"
+    result = {"message": "如果手机号对应启用账号，验证码将发送到该手机号", "delivery": delivery}
+    if os.getenv("FIRM_MANAGER_OTP_DEBUG", "0").lower() in {"1", "true", "yes"} and user:
+        result["debug_code"] = code
+    return result
+
+
+@app.post("/api/auth/otp/login", response_model=schemas.Token)
+async def otp_login(data: schemas.OtpLogin, db: Session = Depends(get_db)):
+    try:
+        phone = normalize_phone(data.phone)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    challenge = db.query(models.OtpChallenge).filter(
+        models.OtpChallenge.phone == phone,
+        models.OtpChallenge.consumed_at.is_(None),
+        models.OtpChallenge.expires_at > datetime.utcnow(),
+    ).order_by(models.OtpChallenge.id.desc()).first()
+    if not challenge or challenge.attempts >= 5 or not secrets.compare_digest(challenge.code_hash, hash_code(phone, data.code)):
+        if challenge:
+            challenge.attempts += 1
+            db.commit()
+        raise HTTPException(status_code=401, detail="验证码无效或已过期")
+    user = db.query(models.User).filter(models.User.phone == phone, models.User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="验证码无效或已过期")
+    challenge.consumed_at = datetime.utcnow()
+    fiscal_year = configured_fiscal_year(db, user, data.fiscal_year)
+    user.fiscal_year = fiscal_year
+    db.commit()
+    return issue_user_token(user, fiscal_year)
 
 
 @app.get("/api/auth/me", response_model=schemas.UserResponse)
@@ -522,6 +643,9 @@ async def create_user(
         ensure_license_user_capacity(db)
 
     real_name = user_data.real_name.strip()
+    phone = (user_data.phone or "").strip() or None
+    if phone and not re.fullmatch(r"\+?[0-9][0-9 -]{5,20}", phone):
+        raise HTTPException(status_code=400, detail="手机号格式不正确")
     if not real_name:
         raise HTTPException(status_code=400, detail="姓名不能为空")
     if not db.query(models.FiscalYear.id).filter_by(year=current_user.fiscal_year).first():
@@ -530,9 +654,12 @@ async def create_user(
     existing = db.query(models.User).filter(models.User.username == user_data.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="用户名已存在")
+    if phone and db.query(models.User).filter(models.User.phone == phone).first():
+        raise HTTPException(status_code=400, detail="手机号已被其他账号使用")
 
     user = models.User(
         username=user_data.username,
+        phone=phone,
         hashed_password=get_password_hash(user_data.password),
         real_name=real_name,
         role=user_data.role,
@@ -555,12 +682,12 @@ def ensure_admin_remains(db: Session, user: models.User, next_role: str, next_ac
 
 
 def ensure_license_user_capacity(db: Session, additional: int = 1) -> None:
-    if not license_required():
+    if not license_required() and not trial_mode():
         return
     current = license_status()
     if not current.get("allowed"):
         raise LicenseCapacityError(status_code=402, detail=current.get("reason", "授权不可用"))
-    maximum = (current.get("document") or {}).get("max_users")
+    maximum = TRIAL_LIMITS["practitioners"] if trial_mode() and not license_required() else (current.get("document") or {}).get("max_users")
     if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 0:
         raise LicenseCapacityError(status_code=402, detail="授权文件未包含有效的执业人员数量上限")
     if maximum == 0:
@@ -570,7 +697,111 @@ def ensure_license_user_capacity(db: Session, additional: int = 1) -> None:
         role=models.UserRole.PRACTITIONER.value,
     ).count()
     if active_users + additional > maximum:
-        raise LicenseCapacityError(status_code=402, detail=f"当前授权最多允许 {maximum} 名启用执业人员")
+        label = "试用模式" if trial_mode() and not license_required() else "当前授权"
+        raise LicenseCapacityError(status_code=402, detail=f"{label}最多允许 {maximum} 名启用执业人员")
+
+
+def ensure_trial_capacity(db: Session, kind: str, additional: int = 1) -> None:
+    if not trial_mode() or license_required():
+        return
+    limit = TRIAL_LIMITS[kind]
+    if kind == "projects":
+        current = db.query(models.Project.id).filter(models.Project.is_deleted == False).count()
+        label = "项目"
+    elif kind == "fiscal_years":
+        current = db.query(models.FiscalYear.id).count()
+        label = "编号年度"
+    else:
+        return
+    if current + additional > limit:
+        raise LicenseCapacityError(status_code=402, detail=f"试用模式最多支持 {limit} 个{label}，请导入授权后继续使用")
+
+
+# ==================== 客户主数据 ====================
+@app.get("/api/customers", response_model=list[schemas.CustomerResponse])
+async def list_customers(
+    search: Optional[str] = None,
+    include_disabled: bool = False,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    query = db.query(models.Customer)
+    if not include_disabled:
+        query = query.filter(models.Customer.is_active == True)
+    if search:
+        query = query.filter(or_(models.Customer.name.contains(search), models.Customer.tax_id.contains(search)))
+    return query.order_by(models.Customer.name.asc(), models.Customer.id.asc()).limit(200).all()
+
+
+@app.post("/api/customers", response_model=schemas.CustomerResponse)
+async def create_customer(
+    data: schemas.CustomerCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="无权限管理客户")
+    tax_id = data.tax_id.strip().upper()
+    name = data.name.strip()
+    if not tax_id or not name:
+        raise HTTPException(status_code=400, detail="税号和客户名称不能为空")
+    if db.query(models.Customer).filter(models.Customer.tax_id == tax_id).first():
+        raise HTTPException(status_code=400, detail="税号已存在")
+    customer = models.Customer(tax_id=tax_id, name=name)
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+    return customer
+
+
+@app.put("/api/customers/{customer_id}", response_model=schemas.CustomerResponse)
+async def update_customer(
+    customer_id: int,
+    data: schemas.CustomerUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="无权限管理客户")
+    customer = db.get(models.Customer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="客户不存在")
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="客户名称不能为空")
+    if name != customer.name:
+        now = datetime.utcnow()
+        current_alias = db.query(models.CustomerAlias).filter(
+            models.CustomerAlias.customer_id == customer.id,
+            models.CustomerAlias.valid_to.is_(None),
+        ).first()
+        if current_alias:
+            current_alias.valid_to = now
+        if not db.query(models.CustomerAlias).filter_by(customer_id=customer.id, name=customer.name).first():
+            db.add(models.CustomerAlias(customer_id=customer.id, name=customer.name, valid_to=now))
+        customer.name = name
+        # 项目保留历史名称，但新建/编辑项目会使用主数据当前名称。
+    db.commit()
+    db.refresh(customer)
+    return customer
+
+
+def resolve_customer_for_project(db: Session, customer_id: int | None, tax_id: str | None, name: str) -> models.Customer | None:
+    if customer_id is not None:
+        customer = db.get(models.Customer, customer_id)
+        if not customer or not customer.is_active:
+            raise HTTPException(status_code=400, detail="所选客户不存在或已停用")
+        return customer
+    normalized_tax_id = (tax_id or "").strip().upper()
+    if not normalized_tax_id:
+        return None
+    customer = db.query(models.Customer).filter(models.Customer.tax_id == normalized_tax_id).first()
+    if customer:
+        return customer
+    customer = models.Customer(tax_id=normalized_tax_id, name=name.strip())
+    db.add(customer)
+    db.flush()
+    return customer
 
 
 @app.put("/api/users/{user_id}", response_model=schemas.UserResponse)
@@ -592,6 +823,14 @@ async def update_user(
     next_role = user_data.role if user_data.role is not None else user.role
     next_active = user_data.is_active if user_data.is_active is not None else user.is_active
     ensure_admin_remains(db, user, next_role, next_active)
+    if user_data.phone is not None:
+        phone = user_data.phone.strip() or None
+        if phone and not re.fullmatch(r"\+?[0-9][0-9 -]{5,20}", phone):
+            raise HTTPException(status_code=400, detail="手机号格式不正确")
+        duplicate = db.query(models.User).filter(models.User.phone == phone, models.User.id != user.id).first() if phone else None
+        if duplicate:
+            raise HTTPException(status_code=400, detail="手机号已被其他账号使用")
+        user.phone = phone
     becomes_practitioner = (
         next_active
         and next_role == models.UserRole.PRACTITIONER.value
@@ -1109,6 +1348,9 @@ async def list_projects(
     project_status: Optional[str] = None,
     leader_id: Optional[int] = None,
     report_year: Optional[int] = Query(None, description="按业务年度筛选；不提供时按当前编号年度筛选"),
+    sort_by: str = Query("created_at"),
+    sort_order: str = Query("desc"),
+    sort: Optional[str] = Query(None, description="多级排序 JSON，例如 [{\"field\":\"customer_name\",\"order\":\"asc\"}]"),
     year: Optional[int] = Query(None, include_in_schema=False),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -1133,6 +1375,7 @@ async def list_projects(
     if search:
         query = query.filter(
             (models.Project.customer_name.contains(search)) |
+            (models.Project.customer_tax_id.contains(search)) |
             (models.Project.project_id.contains(search)) |
             (models.Project.report_no.contains(search))
         )
@@ -1152,7 +1395,33 @@ async def list_projects(
         query = query.filter(models.Project.fiscal_year == current_user.fiscal_year)
 
     total = query.count()
-    items = query.order_by(models.Project.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    sortable = {
+        "project_id": models.Project.project_id,
+        "customer_name": models.Project.customer_name,
+        "customer_tax_id": models.Project.customer_tax_id,
+        "report_year": models.Project.report_year,
+        "report_no": models.Project.report_no,
+        "project_status": models.Project.project_status,
+        "contract_amount": models.Project.contract_amount,
+        "created_at": models.Project.created_at,
+    }
+    sort_clauses = []
+    if sort:
+        try:
+            requested_sorts = json.loads(sort)
+            if not isinstance(requested_sorts, list):
+                raise ValueError
+            for item in requested_sorts[:5]:
+                if not isinstance(item, dict) or item.get("field") not in sortable:
+                    continue
+                column = sortable[item["field"]]
+                sort_clauses.append(column.asc() if str(item.get("order", "asc")).lower() == "asc" else column.desc())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=400, detail="sort 必须是有效的排序条件 JSON")
+    if not sort_clauses:
+        sort_column = sortable.get(sort_by, models.Project.created_at)
+        sort_clauses.append(sort_column.asc() if sort_order.lower() == "asc" else sort_column.desc())
+    items = query.order_by(*sort_clauses, models.Project.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
     # 显式转换为 Pydantic 模型，确保 fiscal_year 字段被正确序列化
     return schemas.ProjectListResponse(
@@ -1229,6 +1498,7 @@ def create_project(
 ):
     if not can_create_project(current_user):
         raise HTTPException(status_code=403, detail="无权限创建项目")
+    ensure_trial_capacity(db, "projects")
 
     if db.get_bind().dialect.name == "sqlite":
         db.execute(text("BEGIN IMMEDIATE"))
@@ -1250,6 +1520,9 @@ def create_project(
 
     validate_project_people(db, project_data.leader_id, project_data.member_ids or [])
     validate_project_signers(db, (project_data.signer1_id, project_data.signer2_id), project_data.firm)
+    customer = resolve_customer_for_project(
+        db, project_data.customer_id, project_data.customer_tax_id, project_data.customer_name
+    )
 
     # 生成项目ID（使用当前操作年度），带竞态条件保护
     project_id = generate_unique_project_no(db, fiscal_year)
@@ -1259,7 +1532,9 @@ def create_project(
         firm=project_data.firm,
         report_type=project_data.report_type,
         report_year=project_data.report_year,
-        customer_name=project_data.customer_name,
+        customer_name=customer.name if customer else project_data.customer_name.strip(),
+        customer_tax_id=customer.tax_id if customer else (project_data.customer_tax_id or "").strip().upper() or None,
+        customer_id=customer.id if customer else None,
         contract_no=project_data.contract_no,
         order_date=project_data.order_date,
         leader_id=project_data.leader_id,
@@ -1303,6 +1578,8 @@ async def update_project(
         raise HTTPException(status_code=404, detail="项目不存在")
 
     update_data = project_data.dict(exclude_unset=True)
+    if "customer_tax_id" in update_data:
+        update_data["customer_tax_id"] = (update_data["customer_tax_id"] or "").strip() or None
     if update_data and not can_edit_project(current_user, project):
         raise HTTPException(status_code=403, detail="无权限编辑此项目")
 
@@ -1334,6 +1611,18 @@ async def update_project(
         db, update_data.get('leader_id', project.leader_id),
         update_data.get('member_ids', [member.user_id for member in project.members]) or [], project,
     )
+
+    if any(field in update_data for field in ("customer_id", "customer_tax_id")):
+        customer = resolve_customer_for_project(
+            db,
+            update_data.get("customer_id", project.customer_id),
+            update_data.get("customer_tax_id", project.customer_tax_id),
+            update_data.get("customer_name", project.customer_name),
+        )
+        if customer:
+            update_data["customer_id"] = customer.id
+            update_data["customer_tax_id"] = customer.tax_id
+            update_data["customer_name"] = customer.name
 
     # 处理团队成员
     if 'member_ids' in update_data:
@@ -1740,6 +2029,7 @@ async def create_numbered_year(
     """创建年度"""
     if not can_manage_fiscal_config(current_user):
         raise HTTPException(status_code=403, detail="无权限管理")
+    ensure_trial_capacity(db, "fiscal_years")
 
     year = validate_config_year(data.year)
     # 检查是否已存在

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/store/AuthContext'
-import { authApi } from '@/api/auth'
+import { authApi, brandingApi, licenseApi } from '@/api/auth'
 import { publicNumberedYearApi } from '@/api/fiscalYearConfig'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,6 +17,8 @@ export default function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [initLoading, setInitLoading] = useState(true)
+  const [branding, setBranding] = useState({ short_name: '', logo_data: '', replace_banner: false, append_title: false })
+  const [licenseMode, setLicenseMode] = useState<string>('development')
   const navigate = useNavigate()
   const location = useLocation()
   const { login } = useAuth()
@@ -41,6 +43,14 @@ export default function Login() {
     }).finally(() => {
       setInitLoading(false)
     })
+  }, [])
+
+  useEffect(() => {
+    brandingApi.public().then(({ data }) => {
+      setBranding(data)
+      if (data.append_title && data.short_name) document.title = `业码汇 - ${data.short_name}`
+    }).catch(() => undefined)
+    licenseApi.status().then(({ data }) => setLicenseMode(data.mode)).catch(() => undefined)
   }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -73,11 +83,16 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <div className="w-full max-w-md space-y-4">
-        <img src="/branding/yemahui-banner-small.png" alt="业码汇" className="mx-auto h-auto w-full max-w-[420px] object-contain" />
+        {branding.replace_banner && branding.logo_data ? (
+          <img src={branding.logo_data} alt={branding.short_name || '业码汇'} className="mx-auto h-16 max-w-[420px] object-contain" />
+        ) : (
+          <img src="/branding/yemahui-banner-small.png" alt="业码汇" className="mx-auto h-auto w-full max-w-[420px] object-contain" />
+        )}
         <Card>
           <CardHeader className="space-y-1 text-center">
-            <CardTitle className="text-2xl font-bold">业码汇</CardTitle>
+            <CardTitle className="text-2xl font-bold">业码汇{branding.short_name ? ` · ${branding.short_name}` : ''}</CardTitle>
             <CardDescription>请输入账号密码登录</CardDescription>
+            {licenseMode === 'trial' && <div className="mt-2 text-xs text-amber-700 bg-amber-50 rounded px-2 py-1">试用中：1 个编号年度、3 个执业人员、3 个项目</div>}
           </CardHeader>
           <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -92,11 +107,11 @@ export default function Login() {
               </div>
             )}
             <div className="space-y-2">
-              <Label htmlFor="username">用户名</Label>
+              <Label htmlFor="username">用户名或手机号</Label>
               <Input
                 id="username"
                 type="text"
-                placeholder="请输入用户名"
+                placeholder="请输入用户名或手机号"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required

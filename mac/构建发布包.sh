@@ -20,7 +20,7 @@ mkdir -p "$PACKAGE/backend" "$PACKAGE/static"
 cp "$CODE"/backend/*.py "$CODE/backend/requirements.txt" "$PACKAGE/backend/"
 cp -R "$CODE/frontend/dist/." "$PACKAGE/static/"
 cp "$CODE/VERSION" "$CODE/LICENSE" "$CODE/THIRD_PARTY_NOTICES.md" "$PACKAGE/"
-cp "$CODE/mac/服务.sh" "$CODE/mac/启动.command" "$CODE/mac/停止.command" "$CODE/mac/README-Mac.txt" "$PACKAGE/"
+cp "$CODE/mac/服务.sh" "$CODE/mac/启动.command" "$CODE/mac/停止.command" "$CODE/mac/README-Mac.txt" "$CODE/mac/server.default.json" "$PACKAGE/"
 chmod +x "$PACKAGE/服务.sh" "$PACKAGE/启动.command" "$PACKAGE/停止.command"
 find "$PACKAGE" -name .DS_Store -delete
 ZIP="$OUT/FirmMatterCodeManagement-mac-$VERSION.zip"

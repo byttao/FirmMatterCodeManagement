@@ -11,6 +11,8 @@ import UserManagement from '@/pages/UserManagement'
 import SignerManagement from '@/pages/SignerManagement'
 import FiscalYearConfig from '@/pages/FiscalYearConfig'
 import SetupWizard from '@/pages/SetupWizard'
+import LicenseManagement from '@/pages/LicenseManagement'
+import CustomerManagement from '@/pages/CustomerManagement'
 
 // 布局组件
 import Layout from '@/components/Layout'
@@ -51,6 +53,8 @@ function AppRoutes() {
         <Route path="signers" element={<SignerManagement />} />
         <Route path="fiscal-year-configs" element={<FiscalYearConfig />} />
         <Route path="users" element={<UserManagement />} />
+        <Route path="license" element={<LicenseManagement />} />
+        <Route path="customers" element={<CustomerManagement />} />
       </Route>
       <Route path="*" element={<Navigate to="/projects" replace />} />
     </Routes>

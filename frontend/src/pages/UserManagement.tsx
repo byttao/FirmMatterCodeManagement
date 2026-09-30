@@ -36,6 +36,7 @@ export default function UserManagement() {
 
   const [formData, setFormData] = useState({
     username: '',
+    phone: '',
     password: '',
     real_name: '',
     role: 'practitioner',
@@ -63,13 +64,13 @@ export default function UserManagement() {
 
   const openCreateDialog = () => {
     setEditingUser(null)
-    setFormData({ username: '', password: '', real_name: '', role: 'practitioner' })
+    setFormData({ username: '', phone: '', password: '', real_name: '', role: 'practitioner' })
     setShowDialog(true)
   }
 
   const openEditDialog = (user: User) => {
     setEditingUser(user)
-    setFormData({ username: user.username, password: '', real_name: user.real_name, role: user.role })
+    setFormData({ username: user.username, phone: user.phone || '', password: '', real_name: user.real_name, role: user.role })
     setShowDialog(true)
   }
 
@@ -81,6 +82,7 @@ export default function UserManagement() {
       if (editingUser) {
         await userApi.update(editingUser.id, {
           real_name: formData.real_name,
+          phone: formData.phone || null,
           role: formData.role,
           ...(formData.password ? { password: formData.password } : {}),
         })
@@ -125,7 +127,8 @@ export default function UserManagement() {
     const query = searchQuery.toLowerCase()
     return (
       u.username.toLowerCase().includes(query) ||
-      u.real_name.toLowerCase().includes(query)
+      u.real_name.toLowerCase().includes(query) ||
+      (u.phone || '').includes(query)
     )
   })
 
@@ -158,7 +161,7 @@ export default function UserManagement() {
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
-          placeholder="搜索用户名或真实姓名..."
+          placeholder="搜索用户名、手机号或真实姓名..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="pl-9 pr-9"
@@ -179,6 +182,7 @@ export default function UserManagement() {
             <TableRow>
               <TableHead>用户名</TableHead>
               <TableHead>真实姓名</TableHead>
+              <TableHead>手机号</TableHead>
               <TableHead>角色</TableHead>
               <TableHead>状态</TableHead>
               <TableHead>创建时间</TableHead>
@@ -188,13 +192,13 @@ export default function UserManagement() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-8">
+                <TableCell colSpan={7} className="text-center py-8">
                   加载中...
                 </TableCell>
               </TableRow>
             ) : filteredUsers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                   {searchQuery ? '未找到匹配的用户' : '暂无用户'}
                 </TableCell>
               </TableRow>
@@ -203,6 +207,7 @@ export default function UserManagement() {
                 <TableRow key={u.id}>
                   <TableCell className="font-mono">{u.username}</TableCell>
                   <TableCell>{u.real_name}</TableCell>
+                  <TableCell>{u.phone || '-'}</TableCell>
                   <TableCell>
                     <Badge variant="outline">{ROLE_LABELS[u.role] || u.role}</Badge>
                   </TableCell>
@@ -267,6 +272,14 @@ export default function UserManagement() {
                 onChange={(e) => setFormData(prev => ({ ...prev, username: e.target.value }))}
                 disabled={!!editingUser}
                 required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>手机号（可选，登录时可代替用户名）</Label>
+              <Input
+                value={formData.phone}
+                onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                placeholder="例如 13800138000"
               />
             </div>
             <div className="space-y-2">

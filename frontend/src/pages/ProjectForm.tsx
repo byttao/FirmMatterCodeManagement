@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { projectApi, userApi, signerApi } from '@/api/auth'
+import { projectApi, userApi, signerApi, customerApi } from '@/api/auth'
 import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
@@ -48,6 +48,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
   // 动态事务所和业务类型列表
   const [firmOptions, setFirmOptions] = useState<string[]>([])
   const [reportTypeOptions, setReportTypeOptions] = useState<string[]>([])
+  const [customerOptions, setCustomerOptions] = useState<{ id: number; tax_id: string; name: string }[]>([])
 
   // 预览模式下重置 dirty 状态，避免刷新时弹出提示
   useEffect(() => {
@@ -74,6 +75,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     report_type: '',
     report_year: defaultReportYear,
     customer_name: '',
+    customer_tax_id: '',
     contract_no: '',
     order_date: new Date().toISOString().split('T')[0], // 今天
     leader_id: isEdit ? undefined : (user?.id ?? undefined),
@@ -116,6 +118,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   useEffect(() => {
     loadAllPractitioners()
+    customerApi.list().then(res => setCustomerOptions(res.data)).catch(() => undefined)
     // 编辑或预览模式都需要加载项目数据
     if (isEdit || isPreview) {
       loadProject()
@@ -278,6 +281,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
         report_type: p.report_type,
         report_year: p.report_year,
         customer_name: p.customer_name,
+        customer_tax_id: p.customer_tax_id || '',
         contract_no: p.contract_no || '',
         order_date: p.order_date ? p.order_date.split('T')[0] : '',
         leader_id: p.leader_id,
@@ -640,11 +644,25 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>客户名称 *</Label>
+                <Select value={formData.customer_id ? String(formData.customer_id) : 'manual'} onValueChange={(value) => {
+                  if (value === 'manual') handleInputChange('customer_id', undefined)
+                  else {
+                    const selected = customerOptions.find(item => String(item.id) === value)
+                    if (selected) setFormData(previous => ({ ...previous, customer_id: selected.id, customer_name: selected.name, customer_tax_id: selected.tax_id }))
+                  }
+                }} disabled={isFieldDisabled}>
+                  <SelectTrigger><SelectValue placeholder="选择客户主体" /></SelectTrigger>
+                  <SelectContent><SelectItem value="manual">手工填写</SelectItem>{customerOptions.map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name} ({item.tax_id})</SelectItem>)}</SelectContent>
+                </Select>
+                {!formData.customer_id && <Input value={formData.customer_name} onChange={(e) => handleInputChange('customer_name', e.target.value)} disabled={isFieldDisabled} required />}
+              </div>
+              <div className="space-y-2">
+                <Label>统一社会信用代码/税号</Label>
                 <Input
-                  value={formData.customer_name}
-                  onChange={(e) => handleInputChange('customer_name', e.target.value)}
+                  value={formData.customer_tax_id || ''}
+                  onChange={(e) => handleInputChange('customer_tax_id', e.target.value)}
                   disabled={isFieldDisabled}
-                  required
+                  placeholder="用于锁定客户主体，避免更名后无法追溯"
                 />
               </div>
               <div className="space-y-2">

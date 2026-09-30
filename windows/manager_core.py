@@ -126,6 +126,16 @@ def health(config: dict, timeout: float = 2, expected_version: str | None = None
         return None
 
 
+def license_status(config: dict, timeout: float = 2) -> dict | None:
+    try:
+        request = Request(f"{local_url(config)}/api/license/status", headers={"User-Agent": "FirmMatterCodeManagement-Manager"})
+        with urlopen(request, timeout=timeout) as response:
+            value = json.load(response)
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def _run(command: list[str], root: Path, timeout: int = 45, check: bool = True) -> subprocess.CompletedProcess:
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=timeout, creationflags=flags)
