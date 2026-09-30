@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { RefreshCw } from 'lucide-react'
 
 type LicenseState = {
   mode: string
@@ -20,6 +21,9 @@ type LicenseState = {
   server_url?: string
   server_connected?: boolean
   server_connection_reason?: string
+  heartbeat_last_at?: string
+  heartbeat_last_success_at?: string
+  heartbeat_last_error?: string
 }
 
 export default function LicenseManagement() {
@@ -30,6 +34,7 @@ export default function LicenseManagement() {
   const [licenseFileName, setLicenseFileName] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [heartbeatLoading, setHeartbeatLoading] = useState(false)
   const licenseFileRef = useRef<HTMLInputElement>(null)
 
   const load = async () => {
@@ -88,6 +93,20 @@ export default function LicenseManagement() {
     }
   }
 
+  const refreshLicense = async () => {
+    setError(''); setMessage(''); setHeartbeatLoading(true)
+    try {
+      await licenseApi.heartbeat()
+      setMessage('授权状态已更新')
+      await load()
+    } catch (err: any) {
+      setError(err.response?.data?.detail || err.message || '授权状态更新失败')
+      await load().catch(() => undefined)
+    } finally {
+      setHeartbeatLoading(false)
+    }
+  }
+
   const readLogo = (file?: File) => {
     if (!file) return
     if (file.size > 1_000_000) { setError('LOGO 文件不能超过 1 MB'); return }
@@ -98,6 +117,7 @@ export default function LicenseManagement() {
 
   const modeLabel = license.mode === 'trial' ? '试用中' : license.mode === 'licensed' ? '已授权' : '开发模式'
   const quotaLabel = (value?: number | null) => value === undefined || value === null || value === 0 ? '不限' : String(value)
+  const formatHeartbeat = (value?: string) => value ? new Date(value).toLocaleString() : '尚未检测'
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -119,6 +139,9 @@ export default function LicenseManagement() {
           <div><span className="text-muted-foreground">项目数量：</span>{license.active_projects ?? 0} / {quotaLabel(license.max_projects)}（已有 / 授权）</div>
           <div><span className="text-muted-foreground">服务器连接：</span><strong className={license.server_connected ? 'text-green-700' : 'text-red-600'}>{license.server_connected ? '已连接' : '未连接'}</strong>{license.server_connection_reason && <span className="ml-2 text-muted-foreground">{license.server_connection_reason}</span>}</div>
           {license.server_url && <div className="truncate"><span className="text-muted-foreground">服务器地址：</span>{license.server_url}</div>}
+          <div><span className="text-muted-foreground">上次心跳检测：</span>{formatHeartbeat(license.heartbeat_last_at)}</div>
+          {license.heartbeat_last_error && <div className="sm:col-span-2 text-red-600"><span className="text-muted-foreground">最近心跳错误：</span>{license.heartbeat_last_error}</div>}
+          <div className="sm:col-span-2"><Button variant="outline" size="sm" onClick={refreshLicense} disabled={heartbeatLoading}><RefreshCw className={`mr-2 h-4 w-4 ${heartbeatLoading ? 'animate-spin' : ''}`} />{heartbeatLoading ? '更新中...' : '手动更新授权状态'}</Button></div>
           {license.limits && <div className="sm:col-span-2"><span className="text-muted-foreground">试用上限：</span>编号年度 {license.limits.fiscal_years} 个，执业人员 {license.limits.practitioners} 名，项目 {license.limits.projects} 个</div>}
         </CardContent>
       </Card>

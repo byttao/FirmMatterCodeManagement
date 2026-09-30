@@ -36,7 +36,7 @@ from report_no_generator import (
     get_available_report_years, get_available_firms, get_available_report_types, get_rule
 )
 from version import APP_VERSION
-from license_client import activate as activate_license, configured_server_url, heartbeat as heartbeat_license, license_features, license_required, server_connection, trial_mode, TRIAL_LIMITS, read_document as read_license_document, require_license_feature, status as license_status
+from license_client import activate as activate_license, configured_server_url, heartbeat as heartbeat_license, heartbeat_state, license_features, license_required, trial_mode, TRIAL_LIMITS, read_document as read_license_document, require_license_feature, status as license_status
 from otp import normalize_phone, generate_code, hash_code, send_sms_code
 import asyncio
 
@@ -44,6 +44,7 @@ upgrade_database(engine)
 
 app = FastAPI(title="业码汇 - 事务所业务编号管理", version=APP_VERSION)
 _license_heartbeat_task = None
+_license_heartbeat_lock = asyncio.Lock()
 
 
 class LicenseCapacityError(HTTPException):
@@ -58,7 +59,8 @@ async def _license_heartbeat_loop():
     while True:
         if read_license_document() is not None and (license_required() or license_status().get("mode") == "licensed"):
             try:
-                await heartbeat_license()
+                async with _license_heartbeat_lock:
+                    await heartbeat_license()
             except Exception:
                 # 本地缓存和宽限期负责短时断网；下次周期继续重试。
                 pass
@@ -90,6 +92,7 @@ async def enforce_license(request: Request, call_next):
     if license_required() and request.url.path.startswith("/api/") and request.url.path not in {
         "/api/license/status",
         "/api/license/activate",
+        "/api/license/heartbeat",
         "/api/setup/status",
         "/api/setup",
         "/api/auth/login",
@@ -137,7 +140,15 @@ async def get_license_status(db: Session = Depends(get_db)):
     current = license_status()
     features = license_features()
     document = current.get("document") or {}
-    connection = await server_connection()
+    saved_heartbeat = heartbeat_state()
+    heartbeat_result = saved_heartbeat.get("last_result")
+    server_connected = heartbeat_result == "success"
+    if heartbeat_result == "success":
+        connection_reason = "最近一次心跳检测成功"
+    elif heartbeat_result == "error":
+        connection_reason = saved_heartbeat.get("last_error", "最近一次心跳检测失败")
+    else:
+        connection_reason = "尚未发送心跳检测"
     active_practitioners = db.query(models.User).filter_by(
         is_active=True,
         role=models.UserRole.PRACTITIONER.value,
@@ -153,9 +164,12 @@ async def get_license_status(db: Session = Depends(get_db)):
         "reason": current.get("reason", ""),
         "expires_at": current.get("expires_at"),
         "grace_until": current.get("grace_until"),
-        "server_url": server_url or connection.get("server_url", ""),
-        "server_connected": connection.get("connected", False),
-        "server_connection_reason": connection.get("reason", ""),
+        "server_url": server_url,
+        "server_connected": server_connected,
+        "server_connection_reason": connection_reason,
+        "heartbeat_last_at": saved_heartbeat.get("last_attempt_at"),
+        "heartbeat_last_success_at": saved_heartbeat.get("last_success_at"),
+        "heartbeat_last_error": saved_heartbeat.get("last_error"),
         "features": None if features is None else sorted(features),
         "mode": current.get("mode", "licensed" if current.get("required") else "development"),
         "limits": current.get("limits"),
@@ -176,6 +190,20 @@ async def activate_license_file(data: schemas.LicenseActivationRequest):
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return result
+
+
+@app.post("/api/license/heartbeat")
+async def send_license_heartbeat(current_user: models.User = Depends(get_current_user)):
+    if current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="只有管理员可以手动更新授权状态")
+    try:
+        async with _license_heartbeat_lock:
+            result = await heartbeat_license()
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"授权服务器连接失败：{exc}")
+    return {"message": "授权状态更新成功", "license_key": result.get("license_key"), "heartbeat": heartbeat_state()}
 
 
 def _get_setting(db: Session, key: str, default: dict) -> dict:

@@ -40,8 +40,9 @@ export const authApi = {
 }
 
 export const licenseApi = {
-  status: () => api.get<{ required: boolean; allowed: boolean; reason: string; mode: string; limits: Record<string, number> | null; expires_at?: string; license_id?: string; license_type?: string; customer_name?: string; max_users?: number | null; active_users?: number; max_projects?: number | null; active_projects?: number; server_url?: string; server_connected?: boolean; server_connection_reason?: string; features: string[] | null }>('/license/status'),
+  status: () => api.get<{ required: boolean; allowed: boolean; reason: string; mode: string; limits: Record<string, number> | null; expires_at?: string; license_id?: string; license_type?: string; customer_name?: string; max_users?: number | null; active_users?: number; max_projects?: number | null; active_projects?: number; server_url?: string; server_connected?: boolean; server_connection_reason?: string; heartbeat_last_at?: string; heartbeat_last_success_at?: string; heartbeat_last_error?: string; features: string[] | null }>('/license/status'),
   activate: (data: { license_document: Record<string, unknown>; server_url?: string; instance_name?: string }) => api.post('/license/activate', data),
+  heartbeat: () => api.post('/license/heartbeat'),
 }
 
 export const brandingApi = {

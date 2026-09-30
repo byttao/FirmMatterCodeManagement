@@ -149,6 +149,31 @@ def remote_block_file() -> Path:
     return license_file().with_name("license-remote-block.json")
 
 
+def heartbeat_state_file() -> Path:
+    return license_file().with_name("license-heartbeat.json")
+
+
+def heartbeat_state() -> dict[str, Any]:
+    path = heartbeat_state_file()
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _save_heartbeat_state(**updates: Any) -> None:
+    path = heartbeat_state_file()
+    state = heartbeat_state()
+    state.update(updates)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def _decode_public_key(value: str | None) -> bytes | None:
     if not value or not value.strip():
         return None
@@ -417,27 +442,39 @@ async def activate(document: dict[str, Any], server_url: str | None = None, inst
 
 
 async def heartbeat(server_url: str | None = None, active_users: int | None = None) -> dict[str, Any]:
-    document = read_document()
-    if not document:
-        raise ValueError("尚未导入授权文件")
-    url = configured_server_url(server_url or document.get("server_url"))
-    if active_users is None:
-        active_users = active_user_count()
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post(url + "/api/v1/heartbeat", json={"license_key": document.get("license_id"), "instance_id": instance_id(), "hardware_fingerprint": instance_fingerprint(), "active_users": active_users, "software_version": APP_VERSION})
-    if response.status_code >= 400:
-        detail = _response_detail(response)
-        if _is_terminal_heartbeat_denial(response.status_code, detail):
-            message = detail.get("message", str(detail)) if isinstance(detail, dict) else str(detail)
-            _record_remote_block(document, message)
-        message = detail.get("message", detail) if isinstance(detail, dict) else detail
-        raise ValueError(str(message))
-    result = response.json()
-    encoded_document = result.get("license_file")
-    if not isinstance(encoded_document, str):
-        raise ValueError("授权服务器未返回许可证文件")
-    updated_document = _decode_license_file(encoded_document)
-    if updated_document.get("license_id") != document.get("license_id"):
-        raise ValueError("授权服务器返回的许可证与当前授权不匹配")
-    save_document(updated_document)
-    return result
+    attempted_at = datetime.now(timezone.utc).isoformat()
+    _save_heartbeat_state(last_attempt_at=attempted_at, last_result="running", last_error=None)
+    try:
+        document = read_document()
+        if not document:
+            raise ValueError("尚未导入授权文件")
+        url = configured_server_url(server_url or document.get("server_url"))
+        if active_users is None:
+            active_users = active_user_count()
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(url + "/api/v1/heartbeat", json={"license_key": document.get("license_id"), "instance_id": instance_id(), "hardware_fingerprint": instance_fingerprint(), "active_users": active_users, "software_version": APP_VERSION})
+        if response.status_code >= 400:
+            detail = _response_detail(response)
+            if _is_terminal_heartbeat_denial(response.status_code, detail):
+                message = detail.get("message", str(detail)) if isinstance(detail, dict) else str(detail)
+                _record_remote_block(document, message)
+            message = detail.get("message", detail) if isinstance(detail, dict) else detail
+            raise ValueError(str(message))
+        result = response.json()
+        encoded_document = result.get("license_file")
+        if not isinstance(encoded_document, str):
+            raise ValueError("授权服务器未返回许可证文件")
+        updated_document = _decode_license_file(encoded_document)
+        if updated_document.get("license_id") != document.get("license_id"):
+            raise ValueError("授权服务器返回的许可证与当前授权不匹配")
+        save_document(updated_document)
+        _save_heartbeat_state(
+            last_attempt_at=attempted_at,
+            last_success_at=datetime.now(timezone.utc).isoformat(),
+            last_result="success",
+            last_error=None,
+        )
+        return result
+    except Exception as exc:
+        _save_heartbeat_state(last_attempt_at=attempted_at, last_result="error", last_error=str(exc))
+        raise
