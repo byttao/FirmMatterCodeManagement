@@ -94,9 +94,9 @@ export default function SetupWizard() {
     }
     if (form.firms.some((firm) => firm.report_types.some((report) => {
       const sequenceMatches = report.template.match(/\{n{1,10}\}/g) || []
-      return !report.template.includes('{yyyy}') || sequenceMatches.length !== 1
+      return (!report.template.includes('{yyyy}') && !report.template.includes('{yy}')) || sequenceMatches.length !== 1
     }))) {
-      setError('编号模板必须包含 {yyyy}，并且只能包含一个序号占位符，例如 {nnn}')
+      setError('编号模板必须包含 {yyyy} 或 {yy} 年度占位符，并且只能包含一个序号占位符，例如 {nnn}')
       return
     }
     const formats = form.firms.flatMap(firm => firm.report_types.map(report =>

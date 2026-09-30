@@ -56,7 +56,7 @@ class LicenseCapacityError(HTTPException):
 async def _license_heartbeat_loop():
     interval = max(300, int(os.getenv("FIRM_MANAGER_LICENSE_HEARTBEAT_SECONDS", "86400")))
     while True:
-        if license_required() and read_license_document() is not None:
+        if read_license_document() is not None and (license_required() or license_status().get("mode") == "licensed"):
             try:
                 await heartbeat_license()
             except Exception:
@@ -68,7 +68,7 @@ async def _license_heartbeat_loop():
 @app.on_event("startup")
 async def start_license_heartbeat():
     global _license_heartbeat_task
-    if license_required():
+    if license_required() or (read_license_document() is not None and license_status().get("mode") == "licensed"):
         _license_heartbeat_task = asyncio.create_task(_license_heartbeat_loop())
 
 
@@ -251,8 +251,8 @@ def is_system_initialized(db: Session) -> bool:
 
 def validate_setup_template(template: str) -> int:
     """校验规则模板，并返回序号位数。"""
-    if not template or "{yyyy}" not in template:
-        raise HTTPException(status_code=400, detail="编号模板必须包含 {yyyy} 年度占位符")
+    if not template or ("{yyyy}" not in template and "{yy}" not in template):
+        raise HTTPException(status_code=400, detail="编号模板必须包含 {yyyy} 或 {yy} 年度占位符")
     matches = re.findall(r"\{(n{1,10})\}", template)
     if len(matches) != 1:
         raise HTTPException(status_code=400, detail="编号模板必须包含且只能包含一个序号占位符，例如 {nnn}")
@@ -311,13 +311,13 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
     """首次安装：创建管理员和第一年度的自定义编号配置。"""
     if not request.client or request.client.host not in ("127.0.0.1", "::1"):
         raise HTTPException(status_code=403, detail="首次安装仅允许从服务器本机完成")
-    if license_required():
-        if not data.license_document:
-            raise HTTPException(status_code=402, detail="商用部署必须先导入授权文件并完成激活")
+    if data.license_document:
         try:
             await activate_license(data.license_document, data.license_server_url, data.instance_name)
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=f"授权激活失败：{exc}")
+    elif license_required():
+        raise HTTPException(status_code=402, detail="商用部署必须先导入授权文件并完成激活")
     if db.get_bind().dialect.name == "sqlite":
         db.execute(text("BEGIN IMMEDIATE"))
     if is_system_initialized(db):

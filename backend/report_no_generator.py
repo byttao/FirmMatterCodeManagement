@@ -8,7 +8,7 @@
 - {yyyy} - 四位编号年度，如 2026
 - {yy}   - 两位编号年度，如 26
 - {n} 到 {nnnnnnnnnn} - 序号，n 的个数决定补零位数，如 {nnn}=001
-- 模板必须包含 {yyyy} 并且只能包含一个序号占位符；其他花括号占位符不支持
+- 模板必须包含 {yyyy} 或 {yy} 并且只能包含一个序号占位符；其他花括号占位符不支持
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import update

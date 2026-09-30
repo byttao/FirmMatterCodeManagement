@@ -99,6 +99,10 @@ def license_server_url_file() -> Path:
     return license_file().with_name("license-server-url.txt")
 
 
+def license_public_key_file() -> Path:
+    return license_file().with_name("license-public-key.txt")
+
+
 def _normalize_server_url(value: str) -> str:
     normalized = value.strip().rstrip("/")
     parsed = urlparse(normalized)
@@ -130,22 +134,46 @@ def save_server_url(server_url: str) -> None:
     temporary.replace(path)
 
 
+def save_public_key(public_key: bytes) -> None:
+    if len(public_key) != 32:
+        raise ValueError("授权服务器返回的公钥长度无效")
+    path = license_public_key_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = base64.urlsafe_b64encode(public_key).decode("ascii").rstrip("=")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(encoded + "\n", encoding="ascii")
+    temporary.replace(path)
+
+
 def remote_block_file() -> Path:
     return license_file().with_name("license-remote-block.json")
 
 
-def _public_key() -> bytes | None:
-    value = os.getenv("FIRM_MANAGER_LICENSE_PUBLIC_KEY", "").strip()
-    if not value:
+def _decode_public_key(value: str | None) -> bytes | None:
+    if not value or not value.strip():
         return None
     try:
-        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        decoded = base64.urlsafe_b64decode(value.strip() + "=" * (-len(value.strip()) % 4))
+        return decoded if len(decoded) == 32 else None
     except (ValueError, TypeError):
         return None
 
 
-def verify_document(document: dict[str, Any]) -> bool:
-    key = _public_key()
+def _public_key() -> bytes | None:
+    value = os.getenv("FIRM_MANAGER_LICENSE_PUBLIC_KEY", "").strip()
+    if value:
+        return _decode_public_key(value)
+    path = license_public_key_file()
+    if path.exists():
+        try:
+            return _decode_public_key(path.read_text(encoding="ascii"))
+        except OSError:
+            return None
+    return None
+
+
+def verify_document(document: dict[str, Any], public_key: bytes | None = None) -> bool:
+    key = public_key or _public_key()
     signature = document.get("signature")
     if key is None or not isinstance(signature, str):
         return False
@@ -176,7 +204,9 @@ def read_document() -> dict[str, Any] | None:
 
 
 def status() -> dict[str, Any]:
-    if not license_required():
+    required = license_required()
+    document = read_document()
+    if not required and (not document or not verify_document(document)):
         if trial_mode():
             return {
                 "required": False,
@@ -186,44 +216,43 @@ def status() -> dict[str, Any]:
                 "limits": TRIAL_LIMITS.copy(),
             }
         return {"required": False, "allowed": True, "mode": "development", "reason": "开发模式未启用授权强制校验"}
-    document = read_document()
     if not document:
-        return {"required": True, "allowed": False, "reason": "尚未导入授权文件"}
+        return {"required": required, "allowed": False, "reason": "尚未导入授权文件"}
     if not verify_document(document):
-        return {"required": True, "allowed": False, "reason": "授权文件签名无效或未配置公钥"}
+        return {"required": required, "allowed": False, "reason": "授权文件签名无效或未配置公钥"}
     blocked_path = remote_block_file()
     if blocked_path.exists():
         try:
             block = json.loads(blocked_path.read_text(encoding="utf-8"))
             if block.get("license_id") == document.get("license_id"):
-                return {"required": True, "allowed": False, "reason": block.get("reason", "授权服务器拒绝当前实例"), "document": document}
+                return {"required": required, "allowed": False, "mode": "licensed", "reason": block.get("reason", "授权服务器拒绝当前实例"), "document": document}
         except (OSError, ValueError):
             pass
     if document.get("product") != os.getenv("LICENSE_PRODUCT_NAME", "业码汇"):
-        return {"required": True, "allowed": False, "reason": "授权产品不匹配"}
+        return {"required": required, "allowed": False, "mode": "licensed", "reason": "授权产品不匹配"}
     document_status = document.get("status")
     if document_status in {"suspended", "revoked"}:
-        return {"required": True, "allowed": False, "reason": f"授权当前状态为 {document_status}", "document": document}
+        return {"required": required, "allowed": False, "mode": "licensed", "reason": f"授权当前状态为 {document_status}", "document": document}
     if document_status != "active":
-        return {"required": True, "allowed": False, "reason": "授权状态无效", "document": document}
+        return {"required": required, "allowed": False, "mode": "licensed", "reason": "授权状态无效", "document": document}
     if not _version_in_range(APP_VERSION, document.get("version_min"), document.get("version_max")):
-        return {"required": True, "allowed": False, "reason": "当前业码汇版本不在授权版本范围内", "document": document}
+        return {"required": required, "allowed": False, "mode": "licensed", "reason": "当前业码汇版本不在授权版本范围内", "document": document}
     try:
         now = datetime.now(timezone.utc)
         starts = _parse_utc(str(document["starts_at"]))
         if document.get("license_type") == "perpetual":
             if now < starts:
-                return {"required": True, "allowed": False, "reason": "授权尚未生效", "document": document}
-            return {"required": True, "allowed": True, "reason": "永久授权有效", "document": document}
+                return {"required": required, "allowed": False, "mode": "licensed", "reason": "授权尚未生效", "document": document}
+            return {"required": required, "allowed": True, "mode": "licensed", "reason": "永久授权有效", "document": document}
         expires = _parse_utc(str(document["expires_at"]))
         grace_until = expires + timedelta(days=int(document.get("grace_days", 0)))
     except (KeyError, TypeError, ValueError):
-        return {"required": True, "allowed": False, "reason": "授权文件字段不完整"}
+        return {"required": required, "allowed": False, "mode": "licensed", "reason": "授权文件字段不完整"}
     if now < starts:
-        return {"required": True, "allowed": False, "reason": "授权尚未生效", "document": document}
+        return {"required": required, "allowed": False, "mode": "licensed", "reason": "授权尚未生效", "document": document}
     if now > grace_until:
-        return {"required": True, "allowed": False, "reason": "授权已过期且超过宽限期", "document": document}
-    return {"required": True, "allowed": True, "reason": "授权有效", "document": document, "expires_at": expires.isoformat(), "grace_until": grace_until.isoformat()}
+        return {"required": required, "allowed": False, "mode": "licensed", "reason": "授权已过期且超过宽限期", "document": document}
+    return {"required": required, "allowed": True, "mode": "licensed", "reason": "授权有效", "document": document, "expires_at": expires.isoformat(), "grace_until": grace_until.isoformat()}
 
 
 def license_features() -> set[str] | None:
@@ -262,8 +291,8 @@ def require_license_feature(feature: str) -> None:
         )
 
 
-def save_document(document: dict[str, Any]) -> None:
-    if not verify_document(document):
+def save_document(document: dict[str, Any], public_key: bytes | None = None) -> None:
+    if not verify_document(document, public_key):
         raise ValueError("授权文件签名无效")
     path = license_file()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -309,9 +338,22 @@ def _response_detail(response: httpx.Response) -> Any:
     return payload.get("detail", payload)
 
 
+async def _fetch_public_key(client: httpx.AsyncClient, server_url: str) -> bytes:
+    response = await client.get(server_url + "/api/public/signing-key")
+    if response.status_code >= 400:
+        detail = _response_detail(response)
+        raise ValueError(f"无法读取授权服务器公钥：{detail}")
+    try:
+        value = response.json().get("public_key")
+    except (ValueError, AttributeError):
+        value = None
+    public_key = _decode_public_key(value)
+    if public_key is None:
+        raise ValueError("授权服务器未返回有效公钥")
+    return public_key
+
+
 async def activate(document: dict[str, Any], server_url: str | None = None, instance_name: str | None = None) -> dict[str, Any]:
-    if not verify_document(document):
-        raise ValueError("授权文件签名无效，请检查 FIRM_MANAGER_LICENSE_PUBLIC_KEY")
     license_key = document.get("license_id")
     if not isinstance(license_key, str) or not license_key.strip():
         raise ValueError("授权文件缺少授权编号")
@@ -319,6 +361,11 @@ async def activate(document: dict[str, Any], server_url: str | None = None, inst
     # replace the server URL by importing a freshly issued license file.
     url = configured_server_url(server_url or document.get("server_url"))
     async with httpx.AsyncClient(timeout=20) as client:
+        configured_key = _public_key()
+        activation_key = configured_key or await _fetch_public_key(client, url)
+        # 商用包预置公钥时校验导入文件；首次激活没有本地公钥时，以授权服务器返回的签名许可证完成信任建立。
+        if configured_key is not None and not verify_document(document, activation_key):
+            raise ValueError("授权文件签名无效，请检查授权文件或授权服务器")
         response = await client.post(url + "/api/v1/activate", json={
             "authorization_code": license_key,
             "product_code": document.get("product_code", "YMH-FMC"),
@@ -332,13 +379,11 @@ async def activate(document: dict[str, Any], server_url: str | None = None, inst
         message = detail.get("message", detail) if isinstance(detail, dict) else detail
         raise ValueError(str(message))
     result = response.json()
-    configured_key = _public_key()
     returned_key = result.get("public_key")
-    try:
-        returned_key_bytes = base64.urlsafe_b64decode(returned_key + "=" * (-len(returned_key) % 4))
-    except (TypeError, ValueError):
-        raise ValueError("授权服务器未返回有效公钥") from None
-    if configured_key is None or returned_key_bytes != configured_key:
+    returned_key_bytes = _decode_public_key(returned_key)
+    if returned_key_bytes is None:
+        raise ValueError("授权服务器未返回有效公钥")
+    if returned_key_bytes != activation_key:
         raise ValueError("授权服务器公钥与当前业码汇版本不匹配")
     encoded_document = result.get("license_file")
     if not isinstance(encoded_document, str):
@@ -346,7 +391,11 @@ async def activate(document: dict[str, Any], server_url: str | None = None, inst
     current_document = _decode_license_file(encoded_document)
     if not isinstance(current_document, dict) or current_document.get("license_id") != document.get("license_id"):
         raise ValueError("授权服务器返回的许可证与导入文件不匹配")
-    save_document(current_document)
+    if not verify_document(current_document, activation_key):
+        raise ValueError("授权服务器返回的许可证签名无效")
+    if configured_key is None:
+        save_public_key(activation_key)
+    save_document(current_document, activation_key)
     save_server_url(url)
     return result
 
