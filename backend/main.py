@@ -36,7 +36,7 @@ from report_no_generator import (
     get_available_report_years, get_available_firms, get_available_report_types, get_rule
 )
 from version import APP_VERSION
-from license_client import activate as activate_license, configured_server_url, heartbeat as heartbeat_license, license_features, license_required, trial_mode, TRIAL_LIMITS, read_document as read_license_document, require_license_feature, status as license_status
+from license_client import activate as activate_license, configured_server_url, heartbeat as heartbeat_license, license_features, license_required, server_connection, trial_mode, TRIAL_LIMITS, read_document as read_license_document, require_license_feature, status as license_status
 from otp import normalize_phone, generate_code, hash_code, send_sms_code
 import asyncio
 
@@ -133,9 +133,16 @@ async def enforce_license(request: Request, call_next):
 
 
 @app.get("/api/license/status")
-async def get_license_status():
+async def get_license_status(db: Session = Depends(get_db)):
     current = license_status()
     features = license_features()
+    document = current.get("document") or {}
+    connection = await server_connection()
+    active_practitioners = db.query(models.User).filter_by(
+        is_active=True,
+        role=models.UserRole.PRACTITIONER.value,
+    ).count()
+    active_projects = db.query(models.Project).filter(models.Project.is_deleted == False).count()
     try:
         server_url = configured_server_url()
     except ValueError:
@@ -146,12 +153,19 @@ async def get_license_status():
         "reason": current.get("reason", ""),
         "expires_at": current.get("expires_at"),
         "grace_until": current.get("grace_until"),
-        "server_url": server_url,
+        "server_url": server_url or connection.get("server_url", ""),
+        "server_connected": connection.get("connected", False),
+        "server_connection_reason": connection.get("reason", ""),
         "features": None if features is None else sorted(features),
         "mode": current.get("mode", "licensed" if current.get("required") else "development"),
         "limits": current.get("limits"),
-        "license_id": (current.get("document") or {}).get("license_id"),
-        "license_type": (current.get("document") or {}).get("license_type"),
+        "license_id": document.get("license_id"),
+        "license_type": document.get("license_type"),
+        "customer_name": document.get("customer_name"),
+        "max_users": document.get("max_users"),
+        "active_users": active_practitioners,
+        "max_projects": document.get("max_projects"),
+        "active_projects": active_projects,
     }
 
 

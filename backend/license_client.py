@@ -353,6 +353,22 @@ async def _fetch_public_key(client: httpx.AsyncClient, server_url: str) -> bytes
     return public_key
 
 
+async def server_connection(server_url: str | None = None) -> dict[str, Any]:
+    """Probe the authorization server without changing local license state."""
+    try:
+        url = configured_server_url(server_url)
+    except ValueError as exc:
+        return {"connected": False, "reason": str(exc)}
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(url + "/health")
+        if response.status_code >= 400:
+            return {"connected": False, "server_url": url, "reason": f"服务器返回 HTTP {response.status_code}"}
+        return {"connected": True, "server_url": url, "reason": "授权服务器连接正常"}
+    except httpx.HTTPError as exc:
+        return {"connected": False, "server_url": url, "reason": f"无法连接授权服务器：{exc.__class__.__name__}"}
+
+
 async def activate(document: dict[str, Any], server_url: str | None = None, instance_name: str | None = None) -> dict[str, Any]:
     license_key = document.get("license_id")
     if not isinstance(license_key, str) or not license_key.strip():

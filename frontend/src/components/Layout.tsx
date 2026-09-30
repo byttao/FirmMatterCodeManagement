@@ -79,13 +79,13 @@ export default function Layout() {
   const canUse = (feature: string) => licenseFeatures === null || licenseFeatures.includes(feature)
   const navItems = [
     { path: '/', label: '数据看板', icon: LayoutDashboard, show: true },
+    { path: '/customers', label: '客户管理', icon: Building2, show: user?.role === 'admin' },
     { path: '/projects', label: '项目管理', icon: Briefcase, show: canUse('project_management') },
-    { path: '/signed-projects', label: '我签字的项目', icon: PenLine, show: user?.role === 'practitioner' && canUse('signatory_review') },
+    { path: '/users', label: '用户管理', icon: Users, show: user?.role === 'admin' && canUse('user_management') },
     { path: '/signers', label: '签字人管理', icon: PenLine, show: (user?.role === 'admin' || user?.role === 'admin_staff') && canUse('signatory_review') },
     { path: '/fiscal-year-configs', label: '编号年度配置', icon: Settings, show: (user?.role === 'admin' || user?.role === 'admin_staff') && canUse('fiscal_year_settings') },
-    { path: '/users', label: '用户管理', icon: Users, show: user?.role === 'admin' && canUse('user_management') },
     { path: '/license', label: '授权与品牌', icon: ShieldCheck, show: user?.role === 'admin' },
-    { path: '/customers', label: '客户管理', icon: Building2, show: user?.role === 'admin' },
+    { path: '/signed-projects', label: '我签字的项目', icon: PenLine, show: user?.role === 'practitioner' && canUse('signatory_review') },
   ].filter(item => item.show)
 
   return (
