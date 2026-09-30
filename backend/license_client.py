@@ -448,7 +448,15 @@ async def heartbeat(server_url: str | None = None, active_users: int | None = No
         document = read_document()
         if not document:
             raise ValueError("尚未导入授权文件")
-        url = configured_server_url(server_url or document.get("server_url"))
+        if server_url and server_url.strip():
+            url = configured_server_url(server_url)
+        else:
+            try:
+                # The saved server URL is authoritative after activation. A
+                # license document may carry an old or local fallback URL.
+                url = configured_server_url()
+            except ValueError:
+                url = configured_server_url(document.get("server_url"))
         if active_users is None:
             active_users = active_user_count()
         async with httpx.AsyncClient(timeout=20) as client:
