@@ -135,8 +135,8 @@ export default function LicenseManagement() {
           <div><span className="text-muted-foreground">签约公司：</span>{license.customer_name || '未绑定公司'}</div>
           {license.license_id && <div><span className="text-muted-foreground">授权编号：</span>{license.license_id}</div>}
           {license.expires_at && <div><span className="text-muted-foreground">到期时间：</span>{new Date(license.expires_at).toLocaleString()}</div>}
-          <div><span className="text-muted-foreground">执业人员：</span>{license.active_users ?? 0} / {quotaLabel(license.max_users)}（已有 / 授权）</div>
-          <div><span className="text-muted-foreground">项目数量：</span>{license.active_projects ?? 0} / {quotaLabel(license.max_projects)}（已有 / 授权）</div>
+          <div><span className="text-muted-foreground">执业人员：</span>已有 {license.active_users ?? 0} 人，授权上限 {quotaLabel(license.max_users)} 人</div>
+          <div><span className="text-muted-foreground">项目数量：</span>已有 {license.active_projects ?? 0} 个，授权上限 {quotaLabel(license.max_projects)} 个</div>
           <div><span className="text-muted-foreground">服务器连接：</span><strong className={license.server_connected ? 'text-green-700' : 'text-red-600'}>{license.server_connected ? '已连接' : '未连接'}</strong>{license.server_connection_reason && <span className="ml-2 text-muted-foreground">{license.server_connection_reason}</span>}</div>
           {license.server_url && <div className="truncate"><span className="text-muted-foreground">服务器地址：</span>{license.server_url}</div>}
           <div><span className="text-muted-foreground">上次心跳检测：</span>{formatHeartbeat(license.heartbeat_last_at)}</div>
