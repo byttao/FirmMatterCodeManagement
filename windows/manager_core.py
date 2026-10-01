@@ -37,6 +37,8 @@ REQUIRED_FILES = {
     "license-public-key.txt",
 }
 RUNTIME_DIRS = ("BackendServer-internal", "Manager-internal")
+DOCUMENT_FILES = {"docs/导出与备份恢复.md", "docs/安装与部署.md"}
+REQUIRED_FILES.update(DOCUMENT_FILES)
 DEFAULT_CONFIG = {"bind_host": "0.0.0.0", "port": 8000, "public_host": ""}
 
 
@@ -270,17 +272,17 @@ def validate_package(archive_path: Path, target_version: str) -> list[str]:
             if (not name or name.startswith("/") or "\\" in name or ":" in name
                     or any(part in {"", ".", ".."} for part in name.rstrip("/").split("/"))
                     or parts[0].startswith(".") or parts[0] == "data"
-                    or (len(parts) > 1 and parts[0] not in RUNTIME_DIRS)
+                    or (len(parts) > 1 and parts[0] not in RUNTIME_DIRS and name not in DOCUMENT_FILES)
                     or (len(parts) == 1 and parts[0] in RUNTIME_DIRS and not name.endswith("/"))):
                 raise RuntimeError(f"Windows 安装包包含非法路径：{name}")
             info = archive.getinfo(name)
             if stat.S_ISLNK(info.external_attr >> 16):
                 raise RuntimeError(f"Windows 安装包包含非法链接：{name}")
             if info.is_dir():
-                if parts[0] not in RUNTIME_DIRS:
+                if parts[0] not in RUNTIME_DIRS and name != "docs/":
                     raise RuntimeError(f"Windows 安装包包含非法目录：{name}")
                 continue
-            if len(parts) > 1:
+            if len(parts) > 1 and parts[0] in runtime_files:
                 runtime_files[parts[0]] += 1
             files.append(name)
         if any(not count for count in runtime_files.values()):
