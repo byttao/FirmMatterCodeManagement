@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
@@ -22,10 +22,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text, or_
 import models
 import schemas
-from migrations import upgrade_database
+from schema_init import initialize_schema
 from finance import refresh_project_finance, cents
 from auth import (
-    get_password_hash, verify_password, create_access_token,
+    get_password_hash, verify_password,
     get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES,
     can_view_project, can_edit_project, can_delete_project,
     can_edit_financial_fields, can_generate_report_no, can_export,
@@ -38,9 +38,11 @@ from report_no_generator import (
 from version import APP_VERSION
 from license_client import activate as activate_license, configured_server_url, heartbeat as heartbeat_license, heartbeat_state, license_features, license_required, trial_mode, TRIAL_LIMITS, read_document as read_license_document, require_license_feature, status as license_status
 from otp import normalize_phone, generate_code, hash_code, send_sms_code
+from auth import issue_session
+from http_security import install_http_boundary, throttle, clear_session_cookies
 import asyncio
 
-upgrade_database(engine)
+initialize_schema(engine)
 
 app = FastAPI(title="业码汇 - 事务所业务编号管理", version=APP_VERSION)
 _license_heartbeat_task = None
@@ -100,7 +102,8 @@ async def enforce_license(request: Request, call_next):
         "/api/auth/otp/login",
     }:
         current = license_status()
-        if not current.get("allowed"):
+        security_action = request.url.path.startswith("/api/auth/")
+        if not current.get("allowed") and request.method not in {"GET", "HEAD", "OPTIONS"} and not security_action:
             return JSONResponse(status_code=402, content={"detail": current.get("reason", "授权不可用"), "license_required": True})
         # Enforce module-level entitlements at the API boundary so direct API
         # calls cannot bypass the navigation visibility in the web client.
@@ -127,7 +130,7 @@ async def enforce_license(request: Request, call_next):
             feature = "fiscal_year_settings"
         elif path.startswith("/api/export"):
             feature = "data_export"
-        if feature:
+        if feature and current.get("allowed"):
             try:
                 require_license_feature(feature)
             except HTTPException as exc:
@@ -135,9 +138,18 @@ async def enforce_license(request: Request, call_next):
     return await call_next(request)
 
 
+install_http_boundary(app, "FIRM_MANAGER", int(os.getenv("FIRM_MANAGER_PORT", "8000")))
+
+
 @app.get("/api/license/status")
-async def get_license_status(db: Session = Depends(get_db)):
+async def get_license_status(request: Request, db: Session = Depends(get_db)):
     current = license_status()
+    minimal = {key: current.get(key) for key in ("required", "allowed", "reason", "mode")}
+    if not request.cookies.get("firm_session"):
+        return minimal
+    user = get_current_user(request, db)
+    if user.role != models.UserRole.ADMIN.value:
+        return {**minimal, "features": sorted(license_features()) if license_features() is not None else None}
     features = license_features()
     document = current.get("document") or {}
     saved_heartbeat = heartbeat_state()
@@ -184,7 +196,9 @@ async def get_license_status(db: Session = Depends(get_db)):
 
 
 @app.post("/api/license/activate")
-async def activate_license_file(data: schemas.LicenseActivationRequest):
+async def activate_license_file(data: schemas.LicenseActivationRequest, current_user: models.User = Depends(get_current_user)):
+    if current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="只有管理员可以激活授权")
     try:
         result = await activate_license(data.license_document, data.server_url, data.instance_name)
     except (ValueError, OSError) as exc:
@@ -446,19 +460,6 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
 
 
 # ==================== 认证相关 ====================
-def issue_user_token(user: models.User, fiscal_year: int) -> dict:
-    access_token = create_access_token(
-        data={
-            "user_id": user.id,
-            "username": user.username,
-            "role": user.role,
-            "fiscal_year": fiscal_year,
-        },
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-    )
-    return {"access_token": access_token, "token_type": "bearer", "fiscal_year": fiscal_year}
-
-
 def configured_fiscal_year(db: Session, user: models.User, requested: int | None) -> int:
     fiscal_year = requested or user.fiscal_year or datetime.now().year
     configured_years = [row[0] for row in db.query(models.FiscalYear.year).order_by(models.FiscalYear.year.desc()).all()]
@@ -471,7 +472,9 @@ def configured_fiscal_year(db: Session, user: models.User, requested: int | None
 
 
 @app.post("/api/auth/login", response_model=schemas.Token)
-async def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
+def login(form_data: schemas.UserLogin, request: Request, response: Response, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    throttle.check(form_data.username, client_ip)
     if not is_system_initialized(db):
         raise HTTPException(status_code=428, detail="系统尚未完成首次安装，请先完成安装向导")
     identifier = form_data.username.strip()
@@ -481,6 +484,7 @@ async def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
     ).first()
 
     if not user or not verify_password(form_data.password, user.hashed_password):
+        throttle.record(form_data.username, client_ip, False)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误"
@@ -488,71 +492,55 @@ async def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
 
     fiscal_year = configured_fiscal_year(db, user, form_data.fiscal_year)
 
-    # 更新用户的当前操作年度
-    if user.fiscal_year != fiscal_year:
-        user.fiscal_year = fiscal_year
-        db.commit()
-
-    return issue_user_token(user, fiscal_year)
+    throttle.record(form_data.username, client_ip, True)
+    csrf = issue_session(db, user, response)
+    return {"access_token": csrf, "token_type": "cookie", "fiscal_year": fiscal_year}
 
 
 @app.post("/api/auth/otp/request")
-async def request_otp(data: schemas.OtpRequest, db: Session = Depends(get_db)):
-    try:
-        phone = normalize_phone(data.phone)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    now = datetime.utcnow()
-    recent = db.query(models.OtpChallenge).filter(
-        models.OtpChallenge.phone == phone,
-        models.OtpChallenge.created_at >= now - timedelta(seconds=60),
-    ).first()
-    if recent:
-        raise HTTPException(status_code=429, detail="验证码发送过于频繁，请稍后再试")
-    user = db.query(models.User).filter(models.User.phone == phone, models.User.is_active == True).first()
-    # 对不存在账号也返回同一提示，避免通过接口枚举手机号。
-    if user:
-        code = generate_code()
-        db.add(models.OtpChallenge(phone=phone, code_hash=hash_code(phone, code), expires_at=now + timedelta(minutes=5)))
-        db.commit()
-        delivery = send_sms_code(phone, code)
-    else:
-        delivery = "not_configured"
-    result = {"message": "如果手机号对应启用账号，验证码将发送到该手机号", "delivery": delivery}
-    if os.getenv("FIRM_MANAGER_OTP_DEBUG", "0").lower() in {"1", "true", "yes"} and user:
-        result["debug_code"] = code
-    return result
+def request_otp():
+    raise HTTPException(404, "短信登录尚未开放")
 
 
-@app.post("/api/auth/otp/login", response_model=schemas.Token)
-async def otp_login(data: schemas.OtpLogin, db: Session = Depends(get_db)):
-    try:
-        phone = normalize_phone(data.phone)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    challenge = db.query(models.OtpChallenge).filter(
-        models.OtpChallenge.phone == phone,
-        models.OtpChallenge.consumed_at.is_(None),
-        models.OtpChallenge.expires_at > datetime.utcnow(),
-    ).order_by(models.OtpChallenge.id.desc()).first()
-    if not challenge or challenge.attempts >= 5 or not secrets.compare_digest(challenge.code_hash, hash_code(phone, data.code)):
-        if challenge:
-            challenge.attempts += 1
-            db.commit()
-        raise HTTPException(status_code=401, detail="验证码无效或已过期")
-    user = db.query(models.User).filter(models.User.phone == phone, models.User.is_active == True).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="验证码无效或已过期")
-    challenge.consumed_at = datetime.utcnow()
-    fiscal_year = configured_fiscal_year(db, user, data.fiscal_year)
-    user.fiscal_year = fiscal_year
-    db.commit()
-    return issue_user_token(user, fiscal_year)
+@app.post("/api/auth/otp/login")
+def otp_login():
+    raise HTTPException(404, "短信登录尚未开放")
 
 
 @app.get("/api/auth/me", response_model=schemas.UserResponse)
 async def get_me(current_user: models.User = Depends(get_current_user)):
     return current_user
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response, db: Session = Depends(get_db),
+           current_user: models.User = Depends(get_current_user)):
+    request.state.auth_session.revoked_at = datetime.utcnow()
+    db.commit()
+    clear_session_cookies(response)
+    return {"message": "已退出登录"}
+
+
+@app.post("/api/auth/logout-all")
+def logout_all(response: Response, db: Session = Depends(get_db),
+               current_user: models.User = Depends(get_current_user)):
+    current_user.session_version += 1
+    db.commit()
+    clear_session_cookies(response)
+    return {"message": "已退出所有设备"}
+
+
+@app.post("/api/auth/change-password")
+def change_password(data: schemas.PasswordChange, response: Response, db: Session = Depends(get_db),
+                    current_user: models.User = Depends(get_current_user)):
+    if not verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(403, "原密码不正确")
+    hashed = get_password_hash(data.new_password)
+    current_user.hashed_password = hashed
+    current_user.session_version += 1
+    db.commit()
+    clear_session_cookies(response)
+    return {"message": "密码已更改，请重新登录"}
 
 
 # ==================== 用户管理 ====================
@@ -642,6 +630,7 @@ async def get_current_fiscal_year(
 @app.put("/api/users/current-fiscal-year")
 async def set_current_fiscal_year(
     data: dict,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -656,19 +645,7 @@ async def set_current_fiscal_year(
     current_user.fiscal_year = fiscal_year
     db.commit()
 
-    # 生成新的 token 包含更新后的年度
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={
-            "user_id": current_user.id,
-            "username": current_user.username,
-            "role": current_user.role,
-            "fiscal_year": fiscal_year
-        },
-        expires_delta=access_token_expires
-    )
-
-    return {"access_token": access_token, "token_type": "bearer", "fiscal_year": fiscal_year}
+    return {"access_token": request.cookies.get("firm_csrf", ""), "token_type": "cookie", "fiscal_year": fiscal_year}
 
 
 @app.post("/api/users", response_model=schemas.UserResponse)
@@ -898,6 +875,9 @@ async def update_user(
     if user_data.is_active is not None:
         user.is_active = user_data.is_active
 
+    if any(field in user_data.__fields_set__ for field in ("password", "role", "is_active")):
+        user.session_version += 1
+
     db.commit()
     db.refresh(user)
     return user
@@ -922,6 +902,7 @@ async def delete_user(
 
     ensure_admin_remains(db, user, user.role, False)
     user.is_active = False
+    user.session_version += 1
     db.commit()
     return {"message": "删除成功"}
 
@@ -1622,8 +1603,10 @@ async def update_project(
     update_data = project_data.dict(exclude_unset=True)
     if "customer_tax_id" in update_data:
         update_data["customer_tax_id"] = (update_data["customer_tax_id"] or "").strip() or None
-    if update_data and not can_edit_project(current_user, project):
+    if not can_edit_project(current_user, project):
         raise HTTPException(status_code=403, detail="无权限编辑此项目")
+    if not update_data:
+        raise HTTPException(status_code=422, detail={"code": "empty_update", "message": "请提供要修改的字段"})
 
     if project.report_no and any(
         field in update_data and update_data[field] != getattr(project, field)
@@ -1689,9 +1672,7 @@ async def update_project(
         db.refresh(project)
     except Exception as e:
         db.rollback()
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="保存失败，请联系管理员并提供请求编号") from e
 
     return project
 

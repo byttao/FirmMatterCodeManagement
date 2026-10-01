@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import type { User, AuthState } from '@/types'
-import { userApi } from '@/api/auth'
+import { userApi, authApi, csrfToken } from '@/api/auth'
 
 interface AuthContextType extends AuthState {
   login: (token: string, user: User, fiscalYear?: number) => void
@@ -20,52 +20,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const storedToken = localStorage.getItem('token')
-    const storedUser = localStorage.getItem('user')
-    const storedFiscalYear = localStorage.getItem('fiscalYear')
-
-    if (storedToken && storedUser) {
-      setToken(storedToken)
-      setUser(JSON.parse(storedUser))
-      if (storedFiscalYear) {
-        setFiscalYearState(parseInt(storedFiscalYear))
-      }
-    }
-    setLoading(false)
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+    const storedFiscalYear = sessionStorage.getItem('fiscalYear')
+    if (storedFiscalYear) setFiscalYearState(Number(storedFiscalYear))
+    if (!csrfToken()) { setLoading(false); return }
+    authApi.getMe().then(({ data }) => { setUser(data); setToken(csrfToken()) })
+      .catch(() => { setUser(null); setToken(null) }).finally(() => setLoading(false))
   }, [])
 
   const login = (newToken: string, newUser: User, newFiscalYear?: number) => {
-    localStorage.setItem('token', newToken)
-    localStorage.setItem('user', JSON.stringify(newUser))
     setToken(newToken)
     setUser(newUser)
     if (newFiscalYear) {
-      localStorage.setItem('fiscalYear', newFiscalYear.toString())
+      sessionStorage.setItem('fiscalYear', newFiscalYear.toString())
       setFiscalYearState(newFiscalYear)
     }
   }
 
-  const logout = () => {
+  const logout = async () => {
+    await authApi.logout()
     localStorage.removeItem('token')
     localStorage.removeItem('user')
     localStorage.removeItem('fiscalYear')
+    sessionStorage.removeItem('fiscalYear')
     setToken(null)
     setUser(null)
     setFiscalYearState(new Date().getFullYear())
   }
 
   const setFiscalYear = (year: number) => {
-    localStorage.setItem('fiscalYear', year.toString())
+    sessionStorage.setItem('fiscalYear', year.toString())
     setFiscalYearState(year)
   }
 
   const updateFiscalYear = async (year: number) => {
     try {
-      const res = await userApi.setFiscalYear(year)
-      const newToken = res.data.access_token
-      localStorage.setItem('token', newToken)
-      setToken(newToken)
-      localStorage.setItem('fiscalYear', year.toString())
+      await userApi.setFiscalYear(year)
+      sessionStorage.setItem('fiscalYear', year.toString())
       setFiscalYearState(year)
     } catch (error) {
       console.error('更新年度失败:', error)

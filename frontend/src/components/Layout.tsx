@@ -59,9 +59,8 @@ export default function Layout() {
     }
     try {
       // 调用 API 设置年度，后端会返回包含新年度的 token
-      const res = await userApi.setFiscalYear(year)
+      await userApi.setFiscalYear(year)
       // 更新本地 token（这样后续请求会使用新的 fiscal_year）
-      localStorage.setItem('token', res.data.access_token)
       setFiscalYear(year)
       // 跳转到项目列表
       navigate('/projects')
@@ -71,13 +70,14 @@ export default function Layout() {
     }
   }
 
-  const handleLogout = () => {
-    logout()
-    navigate('/login')
+  const handleLogout = async () => {
+    try { await logout(); navigate('/login') }
+    catch { alert('退出失败，请检查网络后重试') }
   }
 
   const canUse = (feature: string) => licenseFeatures === null || licenseFeatures.includes(feature)
   const navItems = [
+    { path: '/account', label: '账号安全', icon: ShieldCheck, show: true },
     { path: '/', label: '数据看板', icon: LayoutDashboard, show: true },
     { path: '/customers', label: '客户管理', icon: Building2, show: user?.role === 'admin' },
     { path: '/projects', label: '项目管理', icon: Briefcase, show: canUse('project_management') },

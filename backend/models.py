@@ -43,6 +43,7 @@ class User(Base):
     role = Column(String(20), nullable=False, default=UserRole.PRACTITIONER.value)
     fiscal_year = Column(Integer, nullable=False)  # 当前操作年度
     is_active = Column(Boolean, default=True)
+    session_version = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -109,6 +110,17 @@ class Project(Base):
     @property
     def unreceived(self):
         return self.invoiced_amount - self.received_amount
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    id = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    csrf_hash = Column(String(64), nullable=False)
+    session_version = Column(Integer, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class Customer(Base):

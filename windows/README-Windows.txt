@@ -9,9 +9,9 @@
 完整图文说明：双击“安装与初始化.html”。
 安装包内的 `yemahui-banner-small.png` 和 `favicon.ico` 用于安装说明页面品牌展示。
 Manager.exe 和 BackendServer.exe 使用 PyInstaller 文件夹模式；运行所需的 Python 运行时分别位于 Manager-internal 和 BackendServer-internal。正式运行不需要另装 Python 或 Node.js，也不会在每次启动时解压运行时。
-两个 EXE 必须与各自的 -internal 目录一起保留，不能单独复制到其他位置。升级请在管理工具中选择完整的 Release ZIP，工具会整体替换运行时目录并保留 data。
-从旧的单文件版第一次切换时：先停服务并关闭旧管理工具，备份 data，将新版 ZIP 解压覆盖原目录（保留 data），再运行新版 Manager.exe。旧版管理工具不能直接安装文件夹模式 ZIP。
+两个 EXE 必须与各自的 -internal 目录一起保留，不能单独复制到其他位置。
+v0.2.0 不读取旧数据库、不做原地升级。请保留原数据和密钥备份，在新的本地目录解压完整ZIP并初始化测试。
 关闭 Manager.exe 不会停止后台服务。业务数据和密钥保存在 data 目录。
 发布包不附带额外的 Python 安装包；如需维护源码，请在开发环境单独安装 Python 和依赖。
 
-公网访问前请放行主机防火墙、云安全组或路由器端口转发；系统直接提供 HTTP，不包含 HTTPS，敏感业务建议另行配置 HTTPS 反向代理。
+公网访问前请放行主机防火墙、云安全组或路由器端口转发，并在管理工具中填写公网IP作为Host白名单。系统直接提供HTTP，不包含HTTPS；HTTP不加密密码和资料，本轮不以反向代理或证书作为运行前置条件。

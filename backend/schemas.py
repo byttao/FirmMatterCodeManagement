@@ -3,18 +3,28 @@ from typing import Optional, List, Literal
 from datetime import datetime, date
 
 
+class InputModel(BaseModel):
+    class Config:
+        extra = "forbid"
+
+
+class PasswordChange(InputModel):
+    current_password: constr(min_length=1, max_length=72)
+    new_password: constr(min_length=12, max_length=72)
+
+
 # ============ 用户相关 ============
-class UserBase(BaseModel):
-    username: str
-    phone: Optional[str] = None
-    real_name: str
+class UserBase(InputModel):
+    username: constr(max_length=50)
+    phone: Optional[constr(max_length=30)] = None
+    real_name: constr(max_length=100)
     role: str
 
 
 class UserCreate(UserBase):
     username: constr(regex=r"^[A-Za-z0-9_.-]{3,50}$")
     role: Literal["admin", "practitioner", "admin_staff"]
-    password: constr(min_length=8)
+    password: constr(min_length=12, max_length=72)
 
 
 class UserResponse(UserBase):
@@ -27,15 +37,15 @@ class UserResponse(UserBase):
         orm_mode = True
 
 
-class UserUpdate(BaseModel):
-    real_name: Optional[str] = None
-    phone: Optional[str] = None
+class UserUpdate(InputModel):
+    real_name: Optional[constr(max_length=100)] = None
+    phone: Optional[constr(max_length=30)] = None
     role: Optional[Literal["admin", "practitioner", "admin_staff"]] = None
-    password: Optional[constr(min_length=8)] = None
+    password: Optional[constr(min_length=12, max_length=72)] = None
     is_active: Optional[bool] = None
 
 
-class PractitionerResponse(BaseModel):
+class PractitionerResponse(InputModel):
     """执业人员简单信息（用于项目表单选择）"""
     id: int
     username: str
@@ -49,17 +59,17 @@ class PractitionerResponse(BaseModel):
 
 
 # ============ 签字人相关 ============
-class SignerBase(BaseModel):
+class SignerBase(InputModel):
     name: str
     signer_type: str  # 关联的事务所名称
 
 
-class SignerCreate(BaseModel):
+class SignerCreate(InputModel):
     user_id: int
     signer_type: str
 
 
-class SignerUpdate(BaseModel):
+class SignerUpdate(InputModel):
     user_id: Optional[int] = None
     signer_type: Optional[str] = None
 
@@ -80,45 +90,45 @@ class SignerResponse(SignerBase):
 
 
 # ============ 认证相关 ============
-class Token(BaseModel):
+class Token(InputModel):
     access_token: str
     token_type: str
     fiscal_year: int  # 当前操作年度
 
 
-class TokenData(BaseModel):
+class TokenData(InputModel):
     user_id: int
     username: str
     role: str
     fiscal_year: int  # 当前操作年度
 
 
-class UserLogin(BaseModel):
-    username: str
-    password: str
+class UserLogin(InputModel):
+    username: constr(min_length=1, max_length=80)
+    password: constr(min_length=1, max_length=72)
     fiscal_year: Optional[int] = None  # 登录时可选指定年度，不指定则用当前年
 
 
-class OtpRequest(BaseModel):
+class OtpRequest(InputModel):
     phone: constr(min_length=7, max_length=30)
 
 
-class OtpLogin(BaseModel):
+class OtpLogin(InputModel):
     phone: constr(min_length=7, max_length=30)
     code: constr(min_length=4, max_length=8)
     fiscal_year: Optional[int] = None
 
 
-class CustomerCreate(BaseModel):
+class CustomerCreate(InputModel):
     tax_id: constr(min_length=1, max_length=50)
     name: constr(min_length=1, max_length=200)
 
 
-class CustomerUpdate(BaseModel):
+class CustomerUpdate(InputModel):
     name: constr(min_length=1, max_length=200)
 
 
-class CustomerResponse(BaseModel):
+class CustomerResponse(InputModel):
     id: int
     tax_id: str
     name: str
@@ -130,13 +140,13 @@ class CustomerResponse(BaseModel):
         orm_mode = True
 
 
-class LicenseActivationRequest(BaseModel):
+class LicenseActivationRequest(InputModel):
     license_document: dict
     server_url: Optional[str] = None
     instance_name: Optional[str] = None
 
 
-class BrandingSettings(BaseModel):
+class BrandingSettings(InputModel):
     short_name: str = ""
     logo_data: str = ""
     replace_banner: bool = False
@@ -144,18 +154,18 @@ class BrandingSettings(BaseModel):
 
 
 # ============ 首次安装 ============
-class SetupReportType(BaseModel):
+class SetupReportType(InputModel):
     report_type: str
     template: str
     rule_name: Optional[str] = None
 
 
-class SetupFirm(BaseModel):
+class SetupFirm(InputModel):
     name: str
     report_types: List[SetupReportType]
 
 
-class SetupRequest(BaseModel):
+class SetupRequest(InputModel):
     admin_username: str
     admin_password: str
     admin_real_name: str
@@ -166,11 +176,11 @@ class SetupRequest(BaseModel):
     instance_name: Optional[str] = None
 
 
-class SetupStatus(BaseModel):
+class SetupStatus(InputModel):
     initialized: bool
 
 
-class ProjectMemberBase(BaseModel):
+class ProjectMemberBase(InputModel):
     user_id: int
 
 
@@ -178,7 +188,7 @@ class ProjectMemberCreate(ProjectMemberBase):
     pass
 
 
-class ProjectMemberResponse(BaseModel):
+class ProjectMemberResponse(InputModel):
     id: int
     user_id: int
     user: Optional[UserResponse] = None
@@ -187,14 +197,14 @@ class ProjectMemberResponse(BaseModel):
         orm_mode = True
 
 
-class ProjectBase(BaseModel):
-    firm: str
-    report_type: str
+class ProjectBase(InputModel):
+    firm: constr(min_length=1, max_length=100)
+    report_type: constr(min_length=1, max_length=100)
     report_year: int
-    customer_name: str
-    customer_tax_id: Optional[str] = None
+    customer_name: constr(min_length=1, max_length=200)
+    customer_tax_id: Optional[constr(max_length=50)] = None
     customer_id: Optional[int] = None
-    contract_no: Optional[str] = None
+    contract_no: Optional[constr(max_length=100)] = None
     order_date: Optional[datetime] = None
     project_status: str = "进行中"
     project_phase: str = "签约"
@@ -217,14 +227,14 @@ class ProjectCreate(ProjectBase):
         extra = "forbid"
 
 
-class ProjectUpdate(BaseModel):
-    firm: Optional[str] = None
-    report_type: Optional[str] = None
+class ProjectUpdate(InputModel):
+    firm: Optional[constr(min_length=1, max_length=100)] = None
+    report_type: Optional[constr(min_length=1, max_length=100)] = None
     report_year: Optional[int] = None
-    customer_name: Optional[str] = None
-    customer_tax_id: Optional[str] = None
+    customer_name: Optional[constr(min_length=1, max_length=200)] = None
+    customer_tax_id: Optional[constr(max_length=50)] = None
     customer_id: Optional[int] = None
-    contract_no: Optional[str] = None
+    contract_no: Optional[constr(max_length=100)] = None
     order_date: Optional[datetime] = None
     leader_id: Optional[int] = None
     project_status: Optional[str] = None
@@ -266,7 +276,7 @@ class ProjectResponse(ProjectBase):
         orm_mode = True
 
 
-class ProjectListResponse(BaseModel):
+class ProjectListResponse(InputModel):
     items: List[ProjectResponse]
     total: int
     page: int
@@ -276,7 +286,7 @@ class ProjectListResponse(BaseModel):
         orm_mode = True
 
 
-class ReportNumberHistoryResponse(BaseModel):
+class ReportNumberHistoryResponse(InputModel):
     id: int
     report_no: str
     is_recycled: bool
@@ -288,21 +298,21 @@ class ReportNumberHistoryResponse(BaseModel):
         orm_mode = True
 
 
-class FinancialEntryCreate(BaseModel):
+class FinancialEntryCreate(InputModel):
     amount: condecimal(gt=0, max_digits=12, decimal_places=2)
     occurred_on: date
     reference: Optional[constr(max_length=100)] = None
     note: Optional[constr(max_length=500)] = None
 
 
-class FinancialEntryUpdate(BaseModel):
+class FinancialEntryUpdate(InputModel):
     amount: Optional[condecimal(gt=0, max_digits=12, decimal_places=2)] = None
     occurred_on: Optional[date] = None
     reference: Optional[constr(max_length=100)] = None
     note: Optional[constr(max_length=500)] = None
 
 
-class FinancialEntryResponse(BaseModel):
+class FinancialEntryResponse(InputModel):
     id: int
     amount: float
     occurred_on: Optional[date]
@@ -316,7 +326,7 @@ class FinancialEntryResponse(BaseModel):
 
 
 # ============ 看板统计 ============
-class DashboardStats(BaseModel):
+class DashboardStats(InputModel):
     total_projects: int
     ongoing_projects: int
     completed_projects: int
@@ -331,19 +341,19 @@ class DashboardStats(BaseModel):
 
 
 # ============ 编号生成 ============
-class GenerateReportNoRequest(BaseModel):
+class GenerateReportNoRequest(InputModel):
     project_id: int
     force_regenerate: bool = False  # 管理员可强制重新生成
 
 
 # ============ 编号回收 ============
-class RecycleReportNoRequest(BaseModel):
+class RecycleReportNoRequest(InputModel):
     project_id: int
 
 
 # ============ 新版编号年度配置（三级管理） ============
 # 年度
-class FiscalYearBase(BaseModel):
+class FiscalYearBase(InputModel):
     year: int
 
 
@@ -361,7 +371,7 @@ class FiscalYearResponse(FiscalYearBase):
 
 
 # 年度-事务所组合
-class FiscalYearFirmBase(BaseModel):
+class FiscalYearFirmBase(InputModel):
     firm: str
 
 
@@ -379,7 +389,7 @@ class FiscalYearFirmResponse(FiscalYearFirmBase):
 
 
 # 编号规则
-class ReportNumberRuleBase(BaseModel):
+class ReportNumberRuleBase(InputModel):
     rule_name: str
     template: str
     sequence_digits: int = 3
@@ -389,7 +399,7 @@ class ReportNumberRuleCreate(ReportNumberRuleBase):
     fiscal_year_firm_id: int
 
 
-class ReportNumberRuleUpdate(BaseModel):
+class ReportNumberRuleUpdate(InputModel):
     rule_name: Optional[str] = None
     template: Optional[str] = None
     sequence_digits: Optional[int] = None
@@ -409,7 +419,7 @@ class ReportNumberRuleResponse(ReportNumberRuleBase):
 
 
 # 业务类型
-class FiscalYearReportTypeBase(BaseModel):
+class FiscalYearReportTypeBase(InputModel):
     report_type: str
     rule_id: int
 
@@ -418,7 +428,7 @@ class FiscalYearReportTypeCreate(FiscalYearReportTypeBase):
     fiscal_year_firm_id: int
 
 
-class FiscalYearReportTypeUpdate(BaseModel):
+class FiscalYearReportTypeUpdate(InputModel):
     report_type: Optional[str] = None
     rule_id: Optional[int] = None
 

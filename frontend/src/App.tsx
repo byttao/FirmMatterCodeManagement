@@ -1,18 +1,20 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { lazy, Suspense } from 'react'
 import { AuthProvider, useAuth } from '@/store/AuthContext'
 import { DirtyProvider } from '@/context/DirtyContext'
 import { Toaster } from '@/components/ui/toaster'
 import Login from '@/pages/Login'
-import Dashboard from '@/pages/Dashboard'
-import ProjectList from '@/pages/ProjectList'
-import SignedProjects from '@/pages/SignedProjects'
-import ProjectForm from '@/pages/ProjectForm'
-import UserManagement from '@/pages/UserManagement'
-import SignerManagement from '@/pages/SignerManagement'
-import FiscalYearConfig from '@/pages/FiscalYearConfig'
+const Dashboard = lazy(() => import('@/pages/Dashboard'))
+const ProjectList = lazy(() => import('@/pages/ProjectList'))
+const SignedProjects = lazy(() => import('@/pages/SignedProjects'))
+const ProjectForm = lazy(() => import('@/pages/ProjectForm'))
+const UserManagement = lazy(() => import('@/pages/UserManagement'))
+const SignerManagement = lazy(() => import('@/pages/SignerManagement'))
+const FiscalYearConfig = lazy(() => import('@/pages/FiscalYearConfig'))
 import SetupWizard from '@/pages/SetupWizard'
-import LicenseManagement from '@/pages/LicenseManagement'
-import CustomerManagement from '@/pages/CustomerManagement'
+const LicenseManagement = lazy(() => import('@/pages/LicenseManagement'))
+const CustomerManagement = lazy(() => import('@/pages/CustomerManagement'))
+const AccountSecurity = lazy(() => import('@/pages/AccountSecurity'))
 
 // 布局组件
 import Layout from '@/components/Layout'
@@ -33,7 +35,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function AppRoutes() {
   return (
-    <Routes>
+    <Suspense fallback={<div className="p-4">加载中...</div>}><Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/setup" element={<SetupWizard />} />
       <Route
@@ -55,9 +57,10 @@ function AppRoutes() {
         <Route path="users" element={<UserManagement />} />
         <Route path="license" element={<LicenseManagement />} />
         <Route path="customers" element={<CustomerManagement />} />
+        <Route path="account" element={<AccountSecurity />} />
       </Route>
       <Route path="*" element={<Navigate to="/projects" replace />} />
-    </Routes>
+    </Routes></Suspense>
   )
 }
 

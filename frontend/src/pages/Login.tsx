@@ -63,10 +63,8 @@ export default function Login() {
       const token = res.data.access_token
       const returnedFiscalYear = res.data.fiscal_year
 
-      // 先存储 token（让 axios 拦截器能读取到）
-      localStorage.setItem('token', token)
       if (returnedFiscalYear) {
-        localStorage.setItem('fiscalYear', returnedFiscalYear.toString())
+        sessionStorage.setItem('fiscalYear', returnedFiscalYear.toString())
       }
 
       // 获取用户信息

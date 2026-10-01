@@ -35,6 +35,8 @@ def main() -> None:
 
     from manager_core import load_config
     config = load_config(root)
+    os.environ["FIRM_MANAGER_PORT"] = str(config["port"])
+    os.environ["FIRM_MANAGER_ALLOWED_HOSTS"] = config.get("public_host", "")
     import main as backend_main
     import uvicorn
 
@@ -44,6 +46,7 @@ def main() -> None:
         port=config["port"],
         access_log=False,
         log_level="info",
+        proxy_headers=False,
     )
 
 

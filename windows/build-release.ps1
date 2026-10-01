@@ -123,6 +123,8 @@ try {
 
 if (Test-Path $asset) { Remove-Item $asset }
 Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $asset -CompressionLevel Optimal
+(Get-FileHash $asset -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + (Split-Path $asset -Leaf) |
+  Set-Content (Join-Path $buildDir "SHA256SUMS.txt") -Encoding utf8
 python -c "import sys; sys.path.insert(0, 'windows'); from pathlib import Path; from manager_core import validate_package; validate_package(Path(sys.argv[1]), sys.argv[2])" $asset $version
 if ($LASTEXITCODE -ne 0) { throw "Windows 安装包内容校验失败" }
 Write-Host "Windows 安装包已生成：$asset"

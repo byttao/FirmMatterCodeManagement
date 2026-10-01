@@ -11,12 +11,10 @@ const api = axios.create({
   baseURL: '/api',
 })
 
-// 请求拦截器：添加 token
+export const csrfToken = () => document.cookie.split('; ').find(value => value.startsWith('firm_csrf='))?.split('=')[1] || ''
+
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
+  config.headers['X-CSRF-Token'] = csrfToken()
   return config
 })
 
@@ -24,6 +22,7 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    if (error.response?.data?.detail?.message) error.response.data.detail = error.response.data.detail.message
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
@@ -37,6 +36,9 @@ api.interceptors.response.use(
 export const authApi = {
   login: (data: LoginRequest) => api.post<LoginResponse>('/auth/login', data),
   getMe: () => api.get<User>('/auth/me'),
+  logout: () => api.post('/auth/logout'),
+  logoutAll: () => api.post('/auth/logout-all'),
+  changePassword: (current_password: string, new_password: string) => api.post('/auth/change-password', { current_password, new_password }),
 }
 
 export const licenseApi = {

@@ -74,13 +74,13 @@
     <section>
       <h2>更新与备份</h2>
       <ul>
-        <li>联网升级：在管理工具中点击“检查更新”，发现新版本后点击“安装新版”。</li>
-        <li>离线升级：下载最新的 <code>FirmMatterCodeManagement-win-x64.zip</code>，在管理工具中点击“选择本地 ZIP 升级”。</li>
-        <li>升级时工具会停服务、备份 <code>data\db.sqlite</code>、替换程序并重启验证。失败时尝试恢复原程序和数据库。</li>
-        <li><code>data</code> 保存数据库、登录密钥、服务器配置和升级备份。迁移或重装时必须连同该目录保留。</li>
+        <li>v0.2.0 是新结构测试版本，不读取旧数据库，不提供原地升级或迁移。</li>
+        <li>下载完整 <code>FirmMatterCodeManagement-win-x64.zip</code>，校验SHA-256后解压到新的固定本地目录。</li>
+        <li>保留原 <code>data</code>、密钥和配置的可恢复备份，不能覆盖旧安装目录或自动清库。</li>
+        <li>新版本首次初始化只能从服务本机完成，管理员密码至少12位。</li>
         <li>从旧单文件版首次切换时，先停止服务并关闭旧管理工具，备份整个 <code>data</code>，将新版 ZIP 解压覆盖原目录且保留 <code>data</code>，再运行新版 <code>Manager.exe</code>。旧版管理工具无法直接安装新格式 ZIP。</li>
       </ul>
-      <div class="note">不要在运行服务时直接覆盖安装目录。若升级被断电或系统强制终止，请停止服务后从 <code>data</code> 中的升级前备份恢复，并使用对应版本的安装包排查。</div>
+      <div class="note">五角色、开票资料版本与快照、15天租约及导出队列尚待后续批次；本版不表示总方案完成验收。</div>
     </section>
 
     <section>

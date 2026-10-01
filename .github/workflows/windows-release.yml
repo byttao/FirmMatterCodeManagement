@@ -1,12 +1,21 @@
-name: Windows 发布包
+name: Windows 发布与验收
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
-  release:
-    types: [published]
+    inputs:
+      tag:
+        description: '重试已存在的版本Tag'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   windows-package:
@@ -14,35 +23,58 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: 校验Tag与版本
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'Tag与VERSION不一致' }
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: 安装与测试
+      - name: 安装依赖与回归检查
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt pyinstaller==6.16.0
-          python -m compileall -q backend windows upgrade.py
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install -r backend/requirements.txt httpx pyinstaller==6.16.0
+          python -m compileall -q backend windows
+          python -m unittest discover -s tests -v
           npm --prefix frontend ci
           npm --prefix frontend run build
-      - name: 构建并验证 Windows 安装包
+      - name: 构建并验证Windows安装包
         shell: pwsh
         env:
           FIRM_MANAGER_LICENSE_PUBLIC_KEY: ${{ vars.FIRM_MANAGER_LICENSE_PUBLIC_KEY }}
         run: ./windows/build-release.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: FirmMatterCodeManagement-win-x64
-          path: build/windows-release/FirmMatterCodeManagement-win-x64.zip
+          name: Windows-${{ inputs.tag || github.ref_name }}
+          path: |
+            build/windows-release/FirmMatterCodeManagement-win-x64.zip
+            build/windows-release/SHA256SUMS.txt
           if-no-files-found: error
-      - name: 附加到 GitHub Release
-        if: github.event_name == 'release'
+      - name: 创建草稿并发布完整附件
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload $env:GITHUB_REF_NAME build/windows-release/FirmMatterCodeManagement-win-x64.zip --clobber
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $existing = gh release view $tag --json isDraft --jq .isDraft 2>$null
+          if ($LASTEXITCODE -eq 0 -and $existing -eq 'false') { throw '正式Release已存在，不覆盖附件' }
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --verify-tag --draft --title "$tag 加固会话与项目更新权限" --notes-file "docs/releases/$tag.md"
+            if ($LASTEXITCODE -ne 0) { throw '创建Release草稿失败' }
+          }
+          gh release upload $tag build/windows-release/FirmMatterCodeManagement-win-x64.zip build/windows-release/SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw '附件上传失败' }
+          $count = gh release view $tag --json assets --jq '.assets | length'
+          if ([int]$count -lt 2) { throw '缺少安装包或校验文件' }
+          gh release edit $tag --draft=false
+          if ($LASTEXITCODE -ne 0) { throw '发布Release失败' }

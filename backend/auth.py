@@ -1,94 +1,55 @@
 from datetime import datetime, timedelta
 from typing import Optional
-import os
 import secrets
-from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from database import DATA_DIR, get_db
+from database import get_db
 import models
-import schemas
-
-# JWT 配置
-def load_secret_key() -> str:
-    configured = os.getenv("FIRM_MANAGER_SECRET_KEY")
-    if configured:
-        if len(configured) < 32:
-            raise RuntimeError("FIRM_MANAGER_SECRET_KEY 至少需要 32 个字符")
-        return configured
-
-    secret_file = DATA_DIR / "jwt_secret"
-    if secret_file.exists():
-        return secret_file.read_text(encoding="ascii").strip()
-
-    secret = secrets.token_urlsafe(48)
-    try:
-        fd = os.open(secret_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return secret_file.read_text(encoding="ascii").strip()
-    with os.fdopen(fd, "w", encoding="ascii") as output:
-        output.write(secret)
-    return secret
-
-
-SECRET_KEY = load_secret_key()
-ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8小时
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    from http_security import password_slots
+    with password_slots:
+        return pwd_context.verify(plain_password, hashed_password)
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    if not 12 <= len(password) <= 72 or len(password.encode("utf-8")) > 72:
+        raise HTTPException(422, "密码需为12至72位，UTF-8编码不能超过72字节")
+    from http_security import password_slots
+    with password_slots:
+        return pwd_context.hash(password)
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+def get_current_user(
+    request: Request,
     db: Session = Depends(get_db)
 ):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="认证失败，请重新登录",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: int = payload.get("user_id")
-        if user_id is None:
-            raise credentials_exception
-        token_data = schemas.TokenData(
-            user_id=user_id,
-            username=payload.get("username"),
-            role=payload.get("role"),
-            fiscal_year=payload.get("fiscal_year")
-        )
-    except JWTError:
-        raise credentials_exception
-
-    user = db.query(models.User).filter(models.User.id == token_data.user_id).first()
-    if user is None:
-        raise credentials_exception
-    if not user.is_active:
-        raise HTTPException(status_code=400, detail="用户已被禁用")
+    from http_security import COOKIE, digest, check_csrf
+    session = db.get(models.AuthSession, digest(request.cookies.get(COOKIE, "")))
+    if not session or session.revoked_at or session.expires_at <= datetime.utcnow():
+        raise HTTPException(401, "登录已失效，请重新登录")
+    user = db.get(models.User, session.user_id)
+    if not user or not user.is_active or user.session_version != session.session_version:
+        raise HTTPException(401, "登录已失效，请重新登录")
+    check_csrf(request, session)
+    request.state.auth_session = session
     return user
+
+
+def issue_session(db, user, response):
+    from http_security import digest, set_session_cookies
+    secret, csrf = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
+    db.add(models.AuthSession(id=digest(secret), user_id=user.id, csrf_hash=digest(csrf),
+                             session_version=user.session_version,
+                             expires_at=datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)))
+    db.commit()
+    set_session_cookies(response, secret, csrf, ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+    return csrf
 
 
 def get_user_fiscal_year(user: models.User) -> int:

@@ -40,7 +40,8 @@ if _is_sqlite and engine.url.database != ":memory:":
             busy_timeout_ms = int(float(os.getenv("FIRM_MANAGER_SQLITE_TIMEOUT", "30")) * 1000)
             cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA synchronous=FULL")
         finally:
             cursor.close()
 

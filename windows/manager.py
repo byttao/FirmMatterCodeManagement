@@ -181,7 +181,7 @@ class Manager(tk.Tk):
         ttk.Label(outer, textvariable=self.external_address).grid(row=9, column=1, columnspan=2, sticky="w")
 
         ttk.Separator(outer).grid(row=10, column=0, columnspan=3, sticky="ew", pady=(16, 15))
-        ttk.Label(outer, text="版本升级", font=("Microsoft YaHei UI", 11, "bold")).grid(row=11, column=0, columnspan=3, sticky="w")
+        ttk.Label(outer, text="下载新安装包（新目录安装）", font=("Microsoft YaHei UI", 11, "bold")).grid(row=11, column=0, columnspan=3, sticky="w")
         ttk.Label(outer, textvariable=self.update_status).grid(row=12, column=0, columnspan=3, sticky="w", pady=(6, 10))
         update_actions = ttk.Frame(outer)
         update_actions.grid(row=13, column=0, columnspan=3, sticky="w")
@@ -189,7 +189,7 @@ class Manager(tk.Tk):
         self.check_button.pack(side="left")
         self.update_button = ttk.Button(update_actions, text="安装新版", command=self._install_update, state="disabled")
         self.update_button.pack(side="left", padx=8)
-        ttk.Button(update_actions, text="选择本地 ZIP 升级", command=self._install_local_update).pack(side="left")
+        ttk.Button(update_actions, text="打开发布页面", command=lambda: webbrowser.open("https://github.com/byttao/FirmMatterCodeManagement/releases")).pack(side="left")
 
         self.message = tk.StringVar(value="关闭管理工具不会停止后台服务。")
         ttk.Label(outer, textvariable=self.message, wraplength=620, foreground="#555555").grid(
@@ -368,6 +368,8 @@ class Manager(tk.Tk):
             self._begin_upgrade(version, local_archive=Path(path))
 
     def _begin_upgrade(self, version: str, release: dict | None = None, local_archive: Path | None = None) -> None:
+        messagebox.showinfo("新目录安装", "本版本不支持旧数据库原地升级。请下载完整安装包，在新目录初始化，并保留原数据备份。")
+        return
         if not getattr(sys, "frozen", False):
             messagebox.showerror("无法升级", "请使用 Release 中的 Windows 管理工具执行升级。", parent=self)
             return
