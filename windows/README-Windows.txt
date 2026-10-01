@@ -10,7 +10,7 @@
 安装包内的 `yemahui-banner-small.png` 和 `favicon.ico` 用于安装说明页面品牌展示。
 Manager.exe 和 BackendServer.exe 使用 PyInstaller 文件夹模式；运行所需的 Python 运行时分别位于 Manager-internal 和 BackendServer-internal。正式运行不需要另装 Python 或 Node.js，也不会在每次启动时解压运行时。
 两个 EXE 必须与各自的 -internal 目录一起保留，不能单独复制到其他位置。
-v0.6.0 使用结构600，不读取旧数据库、不做原地升级。请保留原数据和密钥备份，在新的本地目录解压完整ZIP并初始化测试。
+v0.6.1 使用结构600，不读取旧数据库、不做原地升级。请保留原数据和密钥备份，在新的本地目录解压完整ZIP并初始化测试。
 首次安装生成开票资料加密密钥data/billing.key，请受控备份；已有账号时缺密钥将拒绝启动，不能自动生成替代密钥。
 关闭 Manager.exe 不会停止后台服务。业务数据和密钥保存在 data 目录。
 发布包不附带额外的 Python 安装包；如需维护源码，请在开发环境单独安装 Python 和依赖。

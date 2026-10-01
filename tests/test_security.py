@@ -621,6 +621,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get('/api/export-jobs/'+budget['id'])).json()['error_code'],'row_limit_exceeded')
 
     async def test_encrypted_backup_restore_preserves_identity_and_requires_reconciliation(self):
+        from contextlib import closing
         from backups import FILES,validate_restored
         from backup_crypto import restore
         from schema_init import SCHEMA_VERSION
@@ -633,7 +634,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             restore(result.content,'Backup-test-password-2026',target,'YMH-FMC',SCHEMA_VERSION,'db.sqlite',FILES,validate_restored)
             self.assertEqual((target/'billing.key').read_bytes(),(Path(TEST_DIR.name)/'billing.key').read_bytes())
             self.assertEqual((target/'device-identity.json').read_bytes(),(Path(TEST_DIR.name)/'device-identity.json').read_bytes())
-            with sqlite3.connect(target/'db.sqlite') as db:
+            with closing(sqlite3.connect(target/'db.sqlite')) as db:
                 self.assertEqual(db.execute("SELECT value FROM app_settings WHERE key='restore_hold'").fetchone()[0],'{"required":true}')
                 self.assertEqual(db.execute('SELECT count(*) FROM auth_sessions WHERE revoked_at IS NULL').fetchone()[0],0)
                 self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')

@@ -1,5 +1,6 @@
 """Password-encrypted, consistent SQLite backups; restore only into an empty directory."""
 import hashlib
+from contextlib import closing
 import io
 import json
 import os
@@ -30,7 +31,7 @@ def create(directory,database_name,files,password,product,schema,version):
         target=Path(temporary)/database_name
         def progress(*_):
             if time.monotonic()>deadline:raise ValueError('备份超过时间预算，请稍后重试')
-        with sqlite3.connect((directory/database_name).resolve().as_uri()+'?mode=ro',uri=True) as source, sqlite3.connect(target) as snapshot:
+        with closing(sqlite3.connect((directory/database_name).resolve().as_uri()+'?mode=ro',uri=True)) as source, closing(sqlite3.connect(target)) as snapshot:
             source.backup(snapshot,pages=500,progress=progress)
             if snapshot.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('数据库一致性校验失败')
         paths={database_name:target}
@@ -83,7 +84,7 @@ def restore(blob,password,destination,product,schema,database_name,allowed,valid
         os.chmod(temporary,0o700);stage=Path(temporary)/'data';stage.mkdir(mode=0o700)
         for name,value in contents.items():
             path=stage/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(value);path.chmod(0o600)
-        with sqlite3.connect(stage/database_name) as db:
+        with closing(sqlite3.connect(stage/database_name)) as db:
             if db.execute('PRAGMA integrity_check').fetchone()[0]!='ok' or db.execute('PRAGMA foreign_key_check').fetchone():
                 raise ValueError('备份数据库一致性验证失败')
             if db.execute('SELECT version FROM schema_version').fetchone()[0]!=schema:raise ValueError('数据库结构不匹配')

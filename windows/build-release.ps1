@@ -34,6 +34,8 @@ Copy-Item "dist\BackendServer\BackendServer-internal" (Join-Path $packageDir "Ba
 Copy-Item "dist\Manager\Manager-internal" (Join-Path $packageDir "Manager-internal") -Recurse -Force
 [System.IO.File]::WriteAllText((Join-Path $packageDir "license-public-key.txt"), $publicKey, [System.Text.UTF8Encoding]::new($false))
 Copy-Item "windows\FirmMatterService.xml", "windows\README-Windows.txt", "windows\安装与初始化.html", "windows\server.default.json", "docs\assets\yemahui-icon.ico", "docs\assets\yemahui-banner-small.png" $packageDir -Force
+New-Item -ItemType Directory -Force (Join-Path $packageDir 'docs') | Out-Null
+Copy-Item 'docs\导出与备份恢复.md', 'docs\安装与部署.md' (Join-Path $packageDir 'docs')
 Rename-Item (Join-Path $packageDir "yemahui-icon.ico") "favicon.ico"
 
 $smokeData = Join-Path $packageDir "data"
