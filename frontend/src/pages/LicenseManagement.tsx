@@ -12,6 +12,7 @@ type LicenseState = {
   reason: string
   limits: Record<string, number> | null
   expires_at?: string
+  lease_until?: string
   license_id?: string
   customer_name?: string
   max_users?: number | null
@@ -31,6 +32,7 @@ export default function LicenseManagement() {
   const [branding, setBranding] = useState({ short_name: '', logo_data: '', replace_banner: false, append_title: false })
   const [licenseJson, setLicenseJson] = useState('')
   const [serverUrl, setServerUrl] = useState('')
+  const [recoveryUrl, setRecoveryUrl] = useState('')
   const [licenseFileName, setLicenseFileName] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -38,10 +40,12 @@ export default function LicenseManagement() {
   const licenseFileRef = useRef<HTMLInputElement>(null)
 
   const load = async () => {
-    const [licenseRes, brandingRes] = await Promise.all([licenseApi.status(), brandingApi.get()])
+    const licenseRes = await licenseApi.status()
     setLicense(licenseRes.data)
-    setBranding(brandingRes.data)
-    if (brandingRes.data.append_title && brandingRes.data.short_name) document.title = `业码汇 - ${brandingRes.data.short_name}`
+    brandingApi.get().then(brandingRes=>{
+      setBranding(brandingRes.data)
+      if (brandingRes.data.append_title && brandingRes.data.short_name) document.title = `业码汇 - ${brandingRes.data.short_name}`
+    }).catch(()=>undefined)
   }
 
   useEffect(() => { load().catch(() => setError('无法读取授权或品牌配置')) }, [])
@@ -49,14 +53,14 @@ export default function LicenseManagement() {
   const activate = async () => {
     setError(''); setMessage('')
     try {
-      if (!serverUrl.trim()) throw new Error('请输入授权服务器地址')
       const parsed = JSON.parse(licenseJson)
-      await licenseApi.activate({ license_document: parsed, server_url: serverUrl.trim() })
+      await licenseApi.activate({ license_document: parsed })
       setMessage('授权导入成功')
       setLicenseJson('')
       setLicenseFileName('')
       if (licenseFileRef.current) licenseFileRef.current.value = ''
       await load()
+      window.dispatchEvent(new Event('license-updated'))
     } catch (err: any) {
       setError(err.response?.data?.detail || err.message || '授权导入失败，请确认 JSON 文件和授权服务器地址')
     }
@@ -99,6 +103,7 @@ export default function LicenseManagement() {
       await licenseApi.heartbeat()
       setMessage('授权状态已更新')
       await load()
+      window.dispatchEvent(new Event('license-updated'))
     } catch (err: any) {
       setError(err.response?.data?.detail || err.message || '授权状态更新失败')
       await load().catch(() => undefined)
@@ -115,7 +120,7 @@ export default function LicenseManagement() {
     reader.readAsDataURL(file)
   }
 
-  const modeLabel = license.mode === 'trial' ? '试用中' : license.mode === 'licensed' ? '已授权' : '开发模式'
+  const modeLabel = ({trial:'试用中',active:'有效',offline_grace:'有效离线租约内',development:'源码开发',expired_readonly:'到期只读',suspended_readonly:'暂停只读',revoked_readonly:'撤销只读',not_yet_active:'尚未生效',invalid_license:'授权无效',clock_untrusted:'需校时',version_not_allowed:'版本不适用',user_limit_exceeded:'超过人员上限'} as Record<string,string>)[license.mode] || '待核验'
   const quotaLabel = (value?: number | null) => value === undefined || value === null || value === 0 ? '不限' : String(value)
   const formatHeartbeat = (value?: string) => value ? new Date(value).toLocaleString() : '尚未检测'
 
@@ -134,12 +139,14 @@ export default function LicenseManagement() {
           <div><span className="text-muted-foreground">说明：</span>{license.reason || '正常'}</div>
           <div><span className="text-muted-foreground">签约公司：</span>{license.customer_name || '未绑定公司'}</div>
           {license.license_id && <div><span className="text-muted-foreground">授权编号：</span>{license.license_id}</div>}
-          {license.expires_at && <div><span className="text-muted-foreground">到期时间：</span>{new Date(license.expires_at).toLocaleString()}</div>}
+          <div><span className="text-muted-foreground">合同截止：</span>{license.expires_at?new Date(license.expires_at).toLocaleString():'永久使用权 / 未签约'}</div>
+          {license.lease_until&&<div><span className="text-muted-foreground">离线租约截止：</span>{new Date(license.lease_until).toLocaleString()}</div>}
           <div><span className="text-muted-foreground">执业人员：</span>已有 {license.active_users ?? 0} 人，授权上限 {quotaLabel(license.max_users)} 人</div>
           <div><span className="text-muted-foreground">项目数量：</span>已有 {license.active_projects ?? 0} 个，授权上限 {quotaLabel(license.max_projects)} 个</div>
-          <div><span className="text-muted-foreground">服务器连接：</span><strong className={license.server_connected ? 'text-green-700' : 'text-red-600'}>{license.server_connected ? '已连接' : '未连接'}</strong>{license.server_connection_reason && <span className="ml-2 text-muted-foreground">{license.server_connection_reason}</span>}</div>
+          <div><span className="text-muted-foreground">最近核验结果：</span><strong className={license.server_connected ? 'text-green-700' : 'text-red-600'}>{license.server_connected ? '成功' : '尚未成功'}</strong>{license.server_connection_reason && <span className="ml-2 text-muted-foreground">{license.server_connection_reason}</span>}</div>
           {license.server_url && <div className="truncate"><span className="text-muted-foreground">服务器地址：</span>{license.server_url}</div>}
           <div><span className="text-muted-foreground">上次心跳检测：</span>{formatHeartbeat(license.heartbeat_last_at)}</div>
+          <div><span className="text-muted-foreground">最近成功核验：</span>{formatHeartbeat(license.heartbeat_last_success_at)}</div>
           {license.heartbeat_last_error && <div className="sm:col-span-2 text-red-600"><span className="text-muted-foreground">最近心跳错误：</span>{license.heartbeat_last_error}</div>}
           <div className="sm:col-span-2"><Button variant="outline" size="sm" onClick={refreshLicense} disabled={heartbeatLoading}><RefreshCw className={`mr-2 h-4 w-4 ${heartbeatLoading ? 'animate-spin' : ''}`} />{heartbeatLoading ? '更新中...' : '手动更新授权状态'}</Button></div>
           {license.limits && <div className="sm:col-span-2"><span className="text-muted-foreground">试用上限：</span>编号年度 {license.limits.fiscal_years} 个，执业人员 {license.limits.practitioners} 名，项目 {license.limits.projects} 个</div>}
@@ -148,12 +155,14 @@ export default function LicenseManagement() {
       <Card>
         <CardHeader><CardTitle>导入授权</CardTitle><CardDescription>选择 `.liscence` 文件或粘贴授权中心导出的 JSON；导入前请确认授权文件来自可信来源。</CardDescription></CardHeader>
         <CardContent className="space-y-3">
-          <div className="space-y-2"><Label htmlFor="serverUrl">授权服务器地址 <span className="text-red-600">*</span></Label><Input id="serverUrl" required value={serverUrl} onChange={e => setServerUrl(e.target.value)} placeholder="https://license.example.com" /></div>
+          <p className="text-sm text-muted-foreground">连接地址由签名许可证指定，验签通过后使用。永久授权也需每15天内联网核验。</p>
+          {serverUrl&&<div className="space-y-2"><Label htmlFor="serverUrl">文件指定的连接地址</Label><Input id="serverUrl" value={serverUrl} readOnly /></div>}
           <div className="space-y-2"><Label htmlFor="licenseFile">授权文件</Label><Input ref={licenseFileRef} id="licenseFile" type="file" accept=".liscence,.json,application/json,text/plain" onChange={e => readLicenseFile(e.target.files?.[0])} className="h-auto py-2" />{licenseFileName && <p className="text-xs text-muted-foreground">已读取：{licenseFileName}</p>}</div>
           <div className="space-y-2"><Label htmlFor="licenseJson">授权 JSON</Label><textarea id="licenseJson" className="min-h-32 w-full rounded-md border bg-background px-3 py-2 text-sm font-mono" value={licenseJson} onChange={e => setLicenseJson(e.target.value)} placeholder="粘贴授权文件内容" /></div>
-          <Button onClick={activate} disabled={!licenseJson.trim() || !serverUrl.trim()}>导入并激活</Button>
+          <Button onClick={activate} disabled={!licenseJson.trim()}>导入并激活</Button>
         </CardContent>
       </Card>
+      <Card><CardHeader><CardTitle>恢复授权连接地址</CardTitle><CardDescription>旧地址失效时填写新的HTTP IP和端口；只有通过原发行公钥核验的中心响应才会保存。</CardDescription></CardHeader><CardContent className="space-y-3"><Input value={recoveryUrl} onChange={e=>setRecoveryUrl(e.target.value)} placeholder="http://192.168.10.20:8100" /><Button variant="outline" disabled={!license.license_id||!recoveryUrl.trim()} onClick={async()=>{setError('');try{await licenseApi.recoverEndpoint(recoveryUrl);await load();setMessage('新地址已核验并保存');window.dispatchEvent(new Event('license-updated'))}catch(e:any){setError(e.response?.data?.detail||'恢复失败，原地址保留')}}}>核验并保存新地址</Button></CardContent></Card>
       <Card>
         <CardHeader><CardTitle>事务所展示</CardTitle><CardDescription>可将事务所 LOGO 和简称用于登录页及网页标题。</CardDescription></CardHeader>
         <CardContent className="space-y-4">

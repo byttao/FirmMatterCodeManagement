@@ -41,12 +41,16 @@ export default function Layout() {
   }, [])
 
   useEffect(() => {
-    Promise.all([licenseApi.status(), brandingApi.public()]).then(([licenseRes, brandingRes]) => {
-      setLicenseFeatures(licenseRes.data.features)
-      setLicense(licenseRes.data)
+    const refresh = () => licenseApi.status().then(licenseRes=>{
+      setLicenseFeatures(licenseRes.data.features);setLicense(licenseRes.data)
+    }).catch(()=>undefined)
+    refresh()
+    window.addEventListener('license-updated', refresh)
+    brandingApi.public().then(brandingRes=>{
       setBranding(brandingRes.data)
       if (brandingRes.data.append_title && brandingRes.data.short_name) document.title = `业码汇 - ${brandingRes.data.short_name}`
     }).catch(() => undefined)
+    return ()=>window.removeEventListener('license-updated', refresh)
   }, [])
 
   const handleYearChange = async (newYear: string) => {

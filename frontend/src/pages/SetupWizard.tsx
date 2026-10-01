@@ -243,7 +243,7 @@ export default function SetupWizard() {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="license_server_url">授权服务器地址</Label>
-                  <Input id="license_server_url" value={licenseServerUrl} onChange={(e) => setLicenseServerUrl(e.target.value)} placeholder="例如：https://license.example.com" />
+                  <Input id="license_server_url" value={licenseServerUrl} readOnly placeholder="由签名授权文件指定HTTP IP地址" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="instance_name">服务器名称（可选）</Label>

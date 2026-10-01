@@ -9,6 +9,7 @@ import unittest
 
 TEST_DIR = tempfile.TemporaryDirectory(prefix="firm-security-")
 os.environ["FIRM_MANAGER_DATA_DIR"] = TEST_DIR.name
+os.environ['FIRM_MANAGER_DEVELOPMENT'] = '1'
 os.environ["FIRM_MANAGER_ALLOWED_HOSTS"] = "testserver"
 os.environ["FIRM_MANAGER_ALLOWED_PORTS"] = "80"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
@@ -26,6 +27,8 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
     def setUpClass(cls):
         from data_crypto import initialize_key
         initialize_key()
+        from license_manager import manager
+        manager.identity(initialize=True)
         with SessionLocal() as db:
             password = get_password_hash("Test-password-2026")
             admin = models.User(username="admin", real_name="管理", role_records=[models.UserRoleRecord(role_code="office_admin")], fiscal_year=2026, hashed_password=password)
@@ -77,6 +80,20 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_anonymous_data_and_activation_denied(self):
         self.assertEqual((await self.client.get("/api/projects")).status_code, 401)
         self.assertEqual((await self.client.post("/api/license/activate", json={"license_document": {}})).status_code, 401)
+
+    async def test_readonly_allows_account_protection_without_privilege_change(self):
+        from unittest.mock import patch
+        await self.login()
+        password=get_password_hash('Test-password-2026')
+        with SessionLocal() as db:
+            user=models.User(username='readonly-victim',real_name='安全测试',fiscal_year=2026,hashed_password=password,role_records=[models.UserRoleRecord(role_code='clerk')])
+            db.add(user);db.commit();uid=user.id;revision=user.permission_revision
+        with patch.object(main,'license_required',return_value=True), patch.object(main,'license_status',return_value={'allowed':False,'mode':'expired_readonly','reason':'只读'}):
+            response=await self.client.put('/api/users/'+str(uid),json={'expected_revision':revision,'is_active':False,'roles':['office_admin']})
+            self.assertEqual(response.status_code,402,response.text)
+            response=await self.client.put('/api/users/'+str(uid),json={'expected_revision':revision,'is_active':False})
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual((await self.client.post('/api/projects',json={})).status_code,402)
 
     async def test_unrelated_get_and_empty_update_denied(self):
         await self.login("outsider")

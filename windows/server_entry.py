@@ -19,13 +19,16 @@ def main() -> None:
     os.environ["FIRM_MANAGER_VERSION_FILE"] = str(root / "VERSION")
     os.environ.pop("FIRM_MANAGER_DATABASE_URL", None)
     public_key_file = root / "license-public-key.txt"
-    if public_key_file.is_file():
-        public_key = public_key_file.read_text(encoding="ascii").strip()
-        if public_key:
-            os.environ["FIRM_MANAGER_LICENSE_PUBLIC_KEY"] = public_key
-            os.environ["FIRM_MANAGER_LICENSE_REQUIRED"] = "1"
-    else:
-        os.environ["FIRM_MANAGER_TRIAL_MODE"] = "1"
+    if not public_key_file.is_file():
+        raise RuntimeError('缺少预置发行公钥，请下载完整安装包')
+    public_key = public_key_file.read_text(encoding='ascii').strip()
+    import base64
+    try:
+        if len(base64.urlsafe_b64decode(public_key+'='*(-len(public_key)%4))) != 32:
+            raise ValueError()
+    except ValueError:
+        raise RuntimeError('预置发行公钥无效，请下载完整安装包')
+    os.environ['FIRM_MANAGER_LICENSE_PUBLIC_KEY'] = public_key
 
     if getattr(sys, "frozen", False):
         os.environ["FIRM_MANAGER_STATIC_DIR"] = str(Path(sys._MEIPASS) / "static")

@@ -45,12 +45,15 @@ from permissions import has, require, project_scope, related_clause, project_res
 from audit import write_lock, check_revision, event
 from idempotency import lookup as idempotent_lookup, remember
 from data_crypto import initialize_key, key_material
+from pydantic import Field
+from license_manager import manager as license_manager
 import asyncio
 
 initialize_schema(engine)
 with SessionLocal() as startup_db:
     if startup_db.query(models.User.id).first():
         key_material()
+        license_manager.identity()
 
 app = FastAPI(title="业码汇 - 事务所业务编号管理", version=APP_VERSION)
 _license_heartbeat_task = None
@@ -65,23 +68,27 @@ class LicenseCapacityError(HTTPException):
 
 
 async def _license_heartbeat_loop():
-    interval = max(300, int(os.getenv("FIRM_MANAGER_LICENSE_HEARTBEAT_SECONDS", "86400")))
+    import random
+    failures = 0
     while True:
-        if read_license_document() is not None and (license_required() or license_status().get("mode") == "licensed"):
+        if read_license_document() is not None:
             try:
-                async with _license_heartbeat_lock:
-                    await heartbeat_license()
+                await heartbeat_license()
+                failures = 0
             except Exception:
-                # 本地缓存和宽限期负责短时断网；下次周期继续重试。
-                pass
-        await asyncio.sleep(interval)
+                failures += 1
+        interval = [60, 300, 900, 3600][min(failures-1, 3)] if failures else random.uniform(19440, 23760)
+        try:
+            await asyncio.wait_for(license_manager.wakeup.wait(), timeout=interval)
+            license_manager.wakeup.clear()
+        except asyncio.TimeoutError:
+            pass
 
 
 @app.on_event("startup")
 def start_license_heartbeat():
     global _license_heartbeat_task
-    if license_required() or (read_license_document() is not None and license_status().get("mode") == "licensed"):
-        _license_heartbeat_task = asyncio.create_task(_license_heartbeat_loop())
+    _license_heartbeat_task = asyncio.create_task(_license_heartbeat_loop())
 
 
 @app.on_event("shutdown")
@@ -98,11 +105,12 @@ async def stop_license_heartbeat():
 
 @app.middleware("http")
 async def enforce_license(request: Request, call_next):
-    """商用包开启 FIRM_MANAGER_LICENSE_REQUIRED 后强制检查授权。"""
+    """按唯一可信状态源执行业务写入与功能许可检查。"""
     if license_required() and request.url.path.startswith("/api/") and request.url.path not in {
         "/api/license/status",
         "/api/license/activate",
         "/api/license/heartbeat",
+        "/api/license/endpoint",
         "/api/setup/status",
         "/api/setup",
         "/api/auth/login",
@@ -110,7 +118,7 @@ async def enforce_license(request: Request, call_next):
         "/api/auth/otp/login",
     }:
         current = license_status()
-        security_action = request.url.path.startswith("/api/auth/")
+        security_action = request.url.path.startswith("/api/auth/") or request.url.path.startswith('/api/system/backup') or (request.method in ('PUT','DELETE') and re.fullmatch(r'/api/users/[0-9]+', request.url.path))
         if not current.get("allowed") and request.method not in {"GET", "HEAD", "OPTIONS"} and not security_action:
             return JSONResponse(status_code=402, content={"detail": current.get("reason", "授权不可用"), "license_required": True})
         # Enforce module-level entitlements at the API boundary so direct API
@@ -126,7 +134,9 @@ async def enforce_license(request: Request, call_next):
         # the actual API paths so direct requests cannot bypass the module gate.
         elif "/finance/payment" in path or "/finance/receipt" in path:
             feature = "payment_registration"
-        elif path.startswith("/api/projects/") and (path.endswith("/generate-report-no") or path.endswith("/recycle-report-no")):
+        elif path.startswith('/api/billing') or '/billing-profiles' in path:
+            feature = 'invoice_registration'
+        elif path.startswith("/api/projects/") and (path.endswith("/generate-report-no") or path.endswith("/void-report-no")):
             feature = "business_number"
         elif path.startswith("/api/projects"):
             feature = "project_management"
@@ -183,6 +193,7 @@ def get_license_status(request: Request, db: Session = Depends(get_db)):
         "allowed": current.get("allowed", True),
         "reason": current.get("reason", ""),
         "expires_at": current.get("expires_at"),
+        "lease_until": current.get('lease_until'),
         "grace_until": current.get("grace_until"),
         "server_url": server_url,
         "server_connected": server_connected,
@@ -215,17 +226,34 @@ async def activate_license_file(data: schemas.LicenseActivationRequest, current_
 
 
 @app.post("/api/license/heartbeat")
-async def send_license_heartbeat(current_user: models.User = Depends(get_current_user)):
+async def send_license_heartbeat(request: Request, current_user: models.User = Depends(get_current_user)):
     if not has(current_user, "license.manage"):
         raise HTTPException(status_code=403, detail="只有管理员可以手动更新授权状态")
+    throttle.consume('manual-heartbeat', current_user.id, 3, 60)
     try:
-        async with _license_heartbeat_lock:
-            result = await heartbeat_license()
+        result = await heartbeat_license()
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"授权服务器连接失败：{exc}")
+        raise HTTPException(status_code=502, detail='授权服务器连接失败，请提供请求编号')
     return {"message": "授权状态更新成功", "license_key": result.get("license_key"), "heartbeat": heartbeat_state()}
+
+
+class EndpointRecovery(schemas.InputModel):
+    server_url: str = Field(..., min_length=8, max_length=100)
+
+
+@app.post('/api/license/endpoint')
+async def recover_license_endpoint(data: EndpointRecovery, current_user: models.User = Depends(get_current_user)):
+    require(current_user, 'license.manage')
+    if not read_license_document():
+        raise HTTPException(409, '请先导入有效签名许可证')
+    throttle.consume('manual-heartbeat', current_user.id, 3, 60)
+    try:
+        await license_manager.communicate('heartbeat', server_url=data.server_url)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    return {'message':'新端点已通过原信任公钥核验并保存'}
 
 
 def _get_setting(db: Session, key: str, default: dict) -> dict:
@@ -375,13 +403,16 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
     """首次安装：创建管理员和第一年度的自定义编号配置。"""
     if not request.client or request.client.host not in ("127.0.0.1", "::1"):
         raise HTTPException(status_code=403, detail="首次安装仅允许从服务器本机完成")
+    if is_system_initialized(db):
+        raise HTTPException(409, '系统已经完成安装')
+    license_manager.identity(initialize=True)
     if data.license_document:
         try:
             await activate_license(data.license_document, data.license_server_url, data.instance_name)
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=f"授权激活失败：{exc}")
-    elif license_required():
-        raise HTTPException(status_code=402, detail="商用部署必须先导入授权文件并完成激活")
+    elif license_status().get('mode') not in ('trial', 'development'):
+        raise HTTPException(status_code=402, detail='授权不可用，请导入合法许可证')
     if db.get_bind().dialect.name == "sqlite":
         db.execute(text("BEGIN IMMEDIATE"))
     if is_system_initialized(db):
@@ -730,7 +761,7 @@ def ensure_license_user_capacity(db: Session, additional: int = 1) -> None:
     current = license_status()
     if not current.get("allowed"):
         raise LicenseCapacityError(status_code=402, detail=current.get("reason", "授权不可用"))
-    maximum = TRIAL_LIMITS["practitioners"] if trial_mode() and not license_required() else (current.get("document") or {}).get("max_users")
+    maximum = TRIAL_LIMITS["practitioners"] if current.get('mode') == 'trial' else (current.get("document") or {}).get("max_users")
     if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 0:
         raise LicenseCapacityError(status_code=402, detail="授权文件未包含有效的执业人员数量上限")
     if maximum == 0:
@@ -740,12 +771,12 @@ def ensure_license_user_capacity(db: Session, additional: int = 1) -> None:
         is_practitioner=True,
     ).count()
     if active_users + additional > maximum:
-        label = "试用模式" if trial_mode() and not license_required() else "当前授权"
+        label = "试用模式" if current.get('mode') == 'trial' else "当前授权"
         raise LicenseCapacityError(status_code=402, detail=f"{label}最多允许 {maximum} 名启用执业人员")
 
 
 def ensure_trial_capacity(db: Session, kind: str, additional: int = 1) -> None:
-    if not trial_mode() or license_required():
+    if not trial_mode():
         return
     limit = TRIAL_LIMITS[kind]
     if kind == "projects":
@@ -773,6 +804,9 @@ def update_user(
 ):
     if not can_manage_users(current_user):
         raise HTTPException(status_code=403, detail="无权限")
+    readonly = not license_status().get('allowed')
+    if readonly and (user_data.__fields_set__ != {'expected_revision','is_active'} or user_data.is_active is not False):
+        raise HTTPException(402, '只读授权仅允许禁用被盗账号，不允许新增席位或提权')
     password_hash = get_password_hash(user_data.password) if user_data.password else None
     write_lock(db)
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -788,7 +822,7 @@ def update_user(
     validate_identity(next_roles, next_practitioner, next_grants)
     next_active = user_data.is_active if user_data.is_active is not None else user.is_active
     ensure_admin_remains(db, user, next_roles, next_active)
-    if user.is_practitioner and (not next_practitioner or not next_active):
+    if not readonly and user.is_practitioner and (not next_practitioner or not next_active):
         if db.query(models.Project.id).filter_by(leader_id=user.id, is_deleted=False).filter(models.Project.project_status.in_(["进行中", "已暂停"])).first():
             raise HTTPException(409, "请先移交该人员当前负责的项目")
     if user_data.phone is not None:
@@ -852,7 +886,7 @@ def delete_user(
         raise HTTPException(status_code=404, detail="用户不存在")
 
     ensure_admin_remains(db, user, user.roles, False)
-    if db.query(models.Project.id).filter_by(leader_id=user.id, is_deleted=False).filter(models.Project.project_status.in_(["进行中", "已暂停"])).first():
+    if license_status().get('allowed') and db.query(models.Project.id).filter_by(leader_id=user.id, is_deleted=False).filter(models.Project.project_status.in_(["进行中", "已暂停"])).first():
         raise HTTPException(409, "请先移交该人员当前负责的项目")
     user.is_active = False
     user.permission_revision += 1

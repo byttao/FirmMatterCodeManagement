@@ -33,7 +33,7 @@ case "${1:-}" in
       "$ROOT/.venv/bin/python" -m pip install -r "$ROOT/backend/requirements.txt"
       touch "$ROOT/.venv/.requirements-installed"
     fi
-    (cd "$ROOT/backend"; FIRM_MANAGER_DATA_DIR="$RUN" FIRM_MANAGER_STATIC_DIR="$ROOT/static" FIRM_MANAGER_TRIAL_MODE="${FIRM_MANAGER_TRIAL_MODE:-1}" nohup "$ROOT/.venv/bin/python" -m uvicorn main:app --host "$HOST" --port "$PORT" </dev/null >"$RUN/server.log" 2>&1 & echo $! >"$PID")
+    (cd "$ROOT/backend"; FIRM_MANAGER_DATA_DIR="$RUN" FIRM_MANAGER_STATIC_DIR="$ROOT/static" FIRM_MANAGER_LICENSE_PUBLIC_KEY="$(cat "$ROOT/license-public-key.txt")" nohup "$ROOT/.venv/bin/python" -m uvicorn main:app --host "$HOST" --port "$PORT" </dev/null >"$RUN/server.log" 2>&1 & echo $! >"$PID")
     for _ in {1..30}; do
       if running && curl -fsS "http://127.0.0.1:$PORT/api/setup/status" >/dev/null 2>&1; then
         echo "服务已启动：http://127.0.0.1:${PORT}（监听 ${HOST}）"
