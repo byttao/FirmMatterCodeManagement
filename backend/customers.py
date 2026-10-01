@@ -99,9 +99,25 @@ def list_customers(search: Optional[str] = Query(None, max_length=200), page: in
             "total": query.count(), "page": page, "page_size": page_size}
 
 
-@router.get("/customers/{customer_id}", response_model=schemas.CustomerResponse)
+@router.get("/customers/{customer_id}")
 def detail(customer_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    return get_customer(db, user, customer_id)
+    customer = db.get(models.Customer, customer_id)
+    if not customer:
+        raise HTTPException(404, '客户不存在')
+    full_read = can_read_customer(user, customer, db)
+    own = has(user, 'billing.propose.new') and customer.created_by == user.id
+    if not full_read and not own:
+        raise HTTPException(404, '客户不存在或不在可见范围')
+    return {**schemas.CustomerResponse.from_orm(customer).dict(),
+            'billing_access': can_read_customer(user, customer, db, billing=True) or own,
+            'full_read': full_read}
+
+
+@router.get('/customers/{customer_id}/changes')
+def customer_changes(customer_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    get_customer(db, user, customer_id)
+    rows = db.query(models.AuditEvent).filter_by(customer_id=customer_id).filter(models.AuditEvent.action.like('customer.%')).order_by(models.AuditEvent.id.desc()).limit(50).all()
+    return [{'action': r.action, 'actor_id': r.actor_id, 'created_at': r.created_at, 'reason': r.reason} for r in rows]
 
 
 @router.post("/customers", response_model=schemas.CustomerResponse)
@@ -218,6 +234,7 @@ def review(item_id: int, data: Review, request: Request, db: Session = Depends(g
         proposal = schemas.CustomerCreate.parse_raw(item.proposal_json)
         if item.kind == "create":
             customer = create_entity(db, proposal, user)
+            customer.created_by = item.submitted_by
             item.customer_id = customer.id
         else:
             customer = get_customer(db, user, item.customer_id)
@@ -249,3 +266,42 @@ def resolve_for_project(db, customer_id, tax_id, name, user):
             raise HTTPException(409, "该税号客户已停用或合并")
         return customer
     return create_entity(db, schemas.CustomerCreate(name=name, tax_id=normalized), user)
+
+
+class Merge(schemas.InputModel):
+    target_id: int
+    expected_revision: int
+    expected_target_revision: int
+    reason: constr(min_length=1, max_length=500)
+    identity_checked: bool
+    dry_run: bool = True
+
+
+@router.post('/customers/{customer_id}/merge')
+def merge(customer_id: int, data: Merge, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require(user, 'customer.merge')
+    if not data.dry_run:
+        write_lock(db)
+    source = get_customer(db, user, customer_id)
+    target = get_customer(db, user, data.target_id)
+    check_revision(source, data.expected_revision); check_revision(target, data.expected_target_revision)
+    if source.id == target.id or not source.is_active or not target.is_active or source.identity_status != 'confirmed' or target.identity_status != 'confirmed':
+        raise HTTPException(409, '合并需两个不同的启用且已确认主体')
+    if source.type != target.type or not data.identity_checked or not data.reason.strip():
+        raise HTTPException(422, '请核对双方主体类型和身份并填写合并原因')
+    query = db.query(models.Project).filter_by(customer_id=source.id)
+    preview = {'source': schemas.CustomerResponse.from_orm(source), 'target': schemas.CustomerResponse.from_orm(target),
+               'project_count': query.count(), 'billing_profile_count': db.query(models.BillingProfile.id).filter_by(customer_id=source.id).count(),
+               'snapshots_preserved': True}
+    if data.dry_run:
+        return preview
+    for project in query.all():
+        project.customer_id = target.id
+        project.revision += 1
+    if source.name != target.name and not db.query(models.CustomerAlias.id).filter_by(customer_id=target.id, name=source.name).first():
+        db.add(models.CustomerAlias(customer_id=target.id, name=source.name))
+    source.identity_status = 'merged'; source.is_active = False; source.merged_into_id = target.id
+    source.revision += 1; target.revision += 1
+    event(db, user, 'customer.merge', source, reason=data.reason, diff={'target_id': target.id, 'project_count': preview['project_count']}, request=request, customer_id=source.id)
+    commit(db)
+    return {'source_id': source.id, 'target_id': target.id, 'revision': source.revision}

@@ -187,7 +187,11 @@ export interface FinancialEntry {
   occurred_on: string | null
   reference: string | null
   note: string | null
-  is_legacy: boolean
+  revision: number
+  voided_at: string | null
+  void_reason: string | null
+  created_by: number
+  replacement_of_id: number | null
   created_at: string
 }
 
@@ -196,6 +200,11 @@ export interface FinancialEntryInput {
   occurred_on: string | null
   reference?: string | null
   note?: string | null
+  expected_project_revision: number
+  billing_profile_id?: number
+  billing_version_id?: number
+  expected_profile_revision?: number
+  replacement_of_id?: number
 }
 
 export interface ProjectListResponse {

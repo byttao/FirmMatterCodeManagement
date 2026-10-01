@@ -14,6 +14,10 @@ const FiscalYearConfig = lazy(() => import('@/pages/FiscalYearConfig'))
 import SetupWizard from '@/pages/SetupWizard'
 const LicenseManagement = lazy(() => import('@/pages/LicenseManagement'))
 const CustomerManagement = lazy(() => import('@/pages/CustomerManagement'))
+const CustomerDetail = lazy(() => import('@/pages/CustomerDetail'))
+const BillingWorklist = lazy(() => import('@/pages/BillingWorklist'))
+const AuditEvents = lazy(() => import('@/pages/AuditEvents'))
+const ProjectRequests = lazy(() => import('@/pages/ProjectRequests'))
 const AccountSecurity = lazy(() => import('@/pages/AccountSecurity'))
 
 // 布局组件
@@ -57,6 +61,10 @@ function AppRoutes() {
         <Route path="users" element={<UserManagement />} />
         <Route path="license" element={<LicenseManagement />} />
         <Route path="customers" element={<CustomerManagement />} />
+        <Route path="customers/:customerId" element={<CustomerDetail />} />
+        <Route path="billing-worklist" element={<BillingWorklist />} />
+        <Route path="audit-events" element={<AuditEvents />} />
+        <Route path="project-change-requests" element={<ProjectRequests />} />
         <Route path="account" element={<AccountSecurity />} />
       </Route>
       <Route path="*" element={<Navigate to="/projects" replace />} />

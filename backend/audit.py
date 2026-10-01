@@ -17,6 +17,8 @@ def check_revision(entity, expected):
 
 
 def event(db, user, action, entity, reason=None, diff=None, request=None, project_id=None, customer_id=None):
+    if customer_id is None:
+        customer_id = entity.id if entity.__tablename__ == 'customers' else getattr(entity, 'customer_id', None)
     db.add(models.AuditEvent(actor_id=user.id, action=action, target_type=entity.__tablename__,
                              target_id=entity.id, reason=reason, project_id=project_id, customer_id=customer_id,
                              request_id=getattr(getattr(request, "state", None), "request_id", None) or db.info.get("request_id"),

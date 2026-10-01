@@ -248,6 +248,23 @@ class CustomerChangeRequest(Base):
     reviewed_at = Column(DateTime)
 
 
+class ProjectChangeRequest(Base):
+    __tablename__ = 'project_change_requests'
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey('projects.id'), nullable=False, index=True)
+    kind = Column(String(20), nullable=False)
+    target_leader_id = Column(Integer, ForeignKey('users.id'))
+    project_revision = Column(Integer, nullable=False)
+    submitted_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    reason = Column(String(500), nullable=False)
+    status = Column(String(20), nullable=False, default='submitted', index=True)
+    revision = Column(Integer, nullable=False, default=1)
+    reviewed_by = Column(Integer, ForeignKey('users.id'))
+    review_reason = Column(String(500))
+    created_at = Column(DateTime, server_default=func.now())
+    reviewed_at = Column(DateTime)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
     id = Column(Integer, primary_key=True)
@@ -308,7 +325,12 @@ class FinancialEntry(Base):
     occurred_on = Column(Date, nullable=True)  # 旧版汇总记录可能没有日期
     reference = Column(String(100), nullable=True)
     note = Column(String(500), nullable=True)
-    is_legacy = Column(Boolean, nullable=False, default=False)
+    revision = Column(Integer, nullable=False, default=1)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    voided_at = Column(DateTime)
+    voided_by = Column(Integer, ForeignKey("users.id"))
+    void_reason = Column(String(500))
+    replacement_of_id = Column(Integer, ForeignKey("financial_entries.id"), unique=True)
     created_at = Column(DateTime, server_default=func.now())
     project = relationship("Project", back_populates="financial_entries")
 
@@ -322,10 +344,51 @@ class FinancialEntry(Base):
         return self.amount_cents / 100
 
 
-class FinanceMigration(Base):
-    __tablename__ = "finance_migrations"
+class BillingProfile(Base):
+    __tablename__ = "customer_billing_profiles"
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, index=True)
+    label = Column(String(50), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    is_default = Column(Boolean, nullable=False, default=False)
+    revision = Column(Integer, nullable=False, default=1)
+    current_verified_version_id = Column(Integer, ForeignKey("customer_billing_versions.id"))
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
 
-    project_id = Column(Integer, ForeignKey("projects.id"), primary_key=True)
+
+class BillingVersion(Base):
+    __tablename__ = "customer_billing_versions"
+    id = Column(Integer, primary_key=True)
+    profile_id = Column(Integer, ForeignKey("customer_billing_profiles.id"), nullable=False, index=True)
+    version_no = Column(Integer, nullable=False)
+    status = Column(String(16), nullable=False, default="draft", index=True)
+    public_json = Column(Text, nullable=False)
+    sensitive_ciphertext = Column(Text, nullable=False)
+    bank_last4 = Column(String(4))
+    key_id = Column(String(32), nullable=False)
+    revision = Column(Integer, nullable=False, default=1)
+    submitted_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    verified_by = Column(Integer, ForeignKey("users.id"))
+    verification_note = Column(String(500))
+    created_at = Column(DateTime, server_default=func.now())
+    submitted_at = Column(DateTime)
+    verified_at = Column(DateTime)
+    __table_args__ = (Index("uq_billing_version_no", "profile_id", "version_no", unique=True),)
+
+
+class InvoiceSnapshot(Base):
+    __tablename__ = "invoice_billing_snapshots"
+    id = Column(Integer, primary_key=True)
+    financial_entry_id = Column(Integer, ForeignKey("financial_entries.id"), nullable=False, unique=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    profile_id = Column(Integer, ForeignKey("customer_billing_profiles.id"), nullable=False)
+    version_id = Column(Integer, ForeignKey("customer_billing_versions.id"), nullable=False)
+    public_json = Column(Text, nullable=False)
+    sensitive_ciphertext = Column(Text, nullable=False)
+    key_id = Column(String(32), nullable=False)
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class ReportNumberHistory(Base):

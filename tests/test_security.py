@@ -24,6 +24,8 @@ from sqlalchemy import create_engine
 class SecurityTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
+        from data_crypto import initialize_key
+        initialize_key()
         with SessionLocal() as db:
             password = get_password_hash("Test-password-2026")
             admin = models.User(username="admin", real_name="管理", role_records=[models.UserRoleRecord(role_code="office_admin")], fiscal_year=2026, hashed_password=password)
@@ -248,6 +250,217 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             found.extend(c["id"] for c in data["items"])
             cursor = data["next_cursor"]
         self.assertEqual(len(set(found)), 250)
+
+    async def verified_profile(self, bank='0012345678901234', customer_id=None):
+        result = await self.client.post(f'/api/customers/{customer_id or self.customer_id}/billing-profiles', json={
+            'label': '验收档案', 'fields': {'bank_account': bank, 'bank_name': '测试银行', 'recipient_email': 'finance@example.test'}})
+        self.assertEqual(result.status_code, 200, result.text)
+        profile = result.json(); version = profile['versions'][0]
+        result = await self.client.post(f'/api/billing-versions/{version["id"]}/verify', json={
+            'expected_revision': version['revision'], 'expected_profile_revision': profile['revision'],
+            'decision': 'approve', 'verification_note': '财务明确核对主体和银行资料'})
+        self.assertEqual(result.status_code, 200, result.text)
+        profile['revision'] = result.json()['profile_revision']
+        profile['current_verified_version_id'] = version['id']
+        return profile, result.json()['version']
+
+    async def test_billing_encryption_version_and_scope(self):
+        await self.login()
+        profile, version = await self.verified_profile()
+        self.assertNotIn('0012345678901234', str(profile))
+        self.assertEqual(version['bank_last4'], '1234')
+        forbidden = await self.client.patch(f'/api/billing-versions/{version["id"]}', json={'expected_revision': version['revision'], 'fields': {'bank_account': '9999999999999999'}})
+        self.assertEqual(forbidden.status_code, 409)
+        revealed = await self.client.post(f'/api/billing-versions/{version["id"]}/reveal', json={'purpose': '开票前核对复制'})
+        self.assertEqual(revealed.json()['fields']['bank_account'], '0012345678901234')
+        self.assertEqual(revealed.headers['Cache-Control'], 'no-store')
+        with SessionLocal() as db:
+            stored = db.get(models.BillingVersion, version['id'])
+            self.assertNotIn('0012345678901234', stored.sensitive_ciphertext)
+            self.assertNotIn('finance@example.test', stored.public_json)
+            audit = db.query(models.AuditEvent).filter_by(action='billing.reveal', target_id=version['id']).one()
+            self.assertTrue(audit.request_id)
+        await self.login('outsider')
+        self.assertEqual((await self.client.get(f'/api/billing-versions/{version["id"]}')).status_code, 404)
+        self.assertEqual((await self.client.post(f'/api/billing-versions/{version["id"]}/reveal', json={'purpose': '猜测编号'})).status_code, 404)
+
+    async def test_invoice_idempotency_snapshot_and_void(self):
+        await self.login()
+        project = await self.new_project(contract_amount=1000)
+        profile, version = await self.verified_profile()
+        invoice_url = f'/api/projects/{project["id"]}/finance/invoices'
+        data = {'amount': '123.45', 'occurred_on': '2026-10-02', 'expected_project_revision': project['revision'],
+            'billing_profile_id': profile['id'], 'billing_version_id': version['id'], 'expected_profile_revision': profile['revision']}
+        headers = {'Idempotency-Key': f'invoice-test-{project["id"]}'}
+        results = await asyncio.gather(*(self.client.post(invoice_url, json=data, headers=headers) for _ in range(5)))
+        self.assertTrue(all(r.status_code == 200 for r in results), [r.text for r in results])
+        self.assertEqual(len({r.json()['id'] for r in results}), 1)
+        entry = results[0].json()
+        snapshot_url = invoice_url + f'/{entry["id"]}/billing-snapshot'
+        first = (await self.client.get(snapshot_url)).json()
+        self.assertEqual(first['fields']['bank_account'], '0012345678901234')
+        change = await self.client.post(f'/api/billing-profiles/{profile["id"]}/versions', json={'expected_profile_revision': profile['revision'], 'fields': {'bank_account': '0099999999999999'}})
+        self.assertEqual(change.status_code, 200, change.text)
+        newer = change.json()
+        verified = await self.client.post(f'/api/billing-versions/{newer["id"]}/verify', json={'expected_revision': newer['revision'], 'expected_profile_revision': profile['revision']+1, 'decision': 'approve', 'verification_note': '银行已变更再次核对'})
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertEqual((await self.client.get(snapshot_url)).json()['fields']['bank_account'], first['fields']['bank_account'])
+        stale = await self.client.post(invoice_url, json={**data, 'expected_project_revision': 2}, headers={'Idempotency-Key': 'invoice-stale-profile'})
+        self.assertEqual(stale.status_code, 409)
+        void = await self.client.post(invoice_url+f'/{entry["id"]}/void', json={'expected_revision': entry['revision'], 'reason': '登记纠错；另行处理税务系统凭证'})
+        self.assertEqual(void.status_code, 200, void.text)
+        current = (await self.client.get(f'/api/projects/{project["id"]}')).json()
+        self.assertEqual(current['invoiced_amount'], 0)
+        self.assertEqual((await self.client.get(snapshot_url)).json()['fields']['bank_account'], first['fields']['bank_account'])
+        with SessionLocal() as db:
+            self.assertEqual(db.query(models.FinancialEntry).filter_by(project_id=project['id']).count(), 1)
+            self.assertEqual(db.query(models.InvoiceSnapshot).filter_by(financial_entry_id=entry['id']).count(), 1)
+            self.assertEqual(db.get(models.FinancialEntry, entry['id']).amount_cents, 12345)
+            self.assertEqual(db.query(models.AuditEvent).filter_by(action='finance.invoice.create', target_id=entry['id']).count(), 1)
+        other = await self.new_project()
+        self.assertEqual((await self.client.get(f'/api/projects/{other["id"]}/finance/invoices/{entry["id"]}/billing-snapshot')).status_code, 404)
+        await self.login('outsider')
+        self.assertEqual((await self.client.get(snapshot_url)).status_code, 404)
+
+    async def test_billing_key_loss_and_ciphertext_authentication(self):
+        from data_crypto import KEY_PATH, decrypt, encrypt
+        from fastapi import HTTPException
+        encrypted, key_id = encrypt({'bank_account': '001234567890'}, 'entity:1')
+        with self.assertRaises(HTTPException):
+            decrypt(encrypted, key_id, 'entity:2')
+        saved = KEY_PATH.with_suffix('.backup')
+        KEY_PATH.rename(saved)
+        try:
+            with self.assertRaises(HTTPException):
+                decrypt(encrypted, key_id, 'entity:1')
+            self.assertFalse(KEY_PATH.exists())
+        finally:
+            saved.rename(KEY_PATH)
+        self.assertEqual(decrypt(encrypted, key_id, 'entity:1')['bank_account'], '001234567890')
+
+    async def test_leader_submission_finance_verification_and_stale_version(self):
+        await self.login('leader')
+        profile = (await self.client.post(f'/api/customers/{self.customer_id}/billing-profiles', json={'label':'负责人提交', 'fields':{'bank_account':'000123456789'}})).json()
+        version = profile['versions'][0]
+        self.assertEqual((await self.client.post(f'/api/billing-versions/{version["id"]}/verify', json={'expected_revision':1,'expected_profile_revision':1,'decision':'approve','verification_note':'越权'})).status_code,403)
+        submitted = await self.client.post(f'/api/billing-versions/{version["id"]}/submit', json={'expected_revision':version['revision']})
+        self.assertEqual(submitted.status_code,200,submitted.text)
+        stale = await self.client.patch(f'/api/billing-versions/{version["id"]}',json={'expected_revision':1,'fields':{'bank_name':'新银行'}})
+        self.assertEqual(stale.status_code,409)
+        await self.login('finance')
+        preview = await self.client.post(f'/api/billing-versions/{version["id"]}/verification-preview',json={'purpose':'核对负责人提交'})
+        self.assertEqual(preview.json()['fields']['bank_account'],'000123456789')
+        approved = await self.client.post(f'/api/billing-versions/{version["id"]}/verify',json={'expected_revision':submitted.json()['revision'],'expected_profile_revision':profile['revision'],'decision':'approve','verification_note':'已对照开户证明'})
+        self.assertEqual(approved.status_code,200,approved.text)
+        with SessionLocal() as db:
+            stored = db.get(models.BillingVersion,version['id'])
+            self.assertIsNotNone(stored.verified_at)
+            self.assertEqual(stored.verification_note,'已对照开户证明')
+
+    async def test_clerk_can_manage_only_own_unconfirmed_drafts(self):
+        await self.login('clerk')
+        proposal = await self.client.post('/api/customer-change-requests',json={'kind':'create','proposal':{'name':'行政自有客户','tax_id':'CLERK-OWN','type':'enterprise'},'reason':'新客户资料'})
+        await self.login('finance')
+        reviewed = await self.client.post(f'/api/customer-change-requests/{proposal.json()["id"]}/review',json={'expected_revision':1,'decision':'approve','reason':'核对主体证明'})
+        self.assertEqual(reviewed.status_code,200,reviewed.text)
+        customer_id=reviewed.json()['customer_id']
+        await self.login('clerk')
+        profile = await self.client.post(f'/api/customers/{customer_id}/billing-profiles',json={'label':'行政草稿','fields':{'bank_account':'000111222333'}})
+        self.assertEqual(profile.status_code,200,profile.text)
+        version=profile.json()['versions'][0]
+        self.assertEqual((await self.client.post(f'/api/billing-versions/{version["id"]}/reveal',json={'purpose':'编辑自有草稿'})).status_code,200)
+        self.assertEqual((await self.client.post(f'/api/billing-versions/{version["id"]}/submit',json={'expected_revision':1})).status_code,200)
+        self.assertEqual(len((await self.client.get(f'/api/customers/{customer_id}/billing-profiles')).json()),1)
+        self.assertEqual((await self.client.get(f'/api/customers/{self.customer_id}/billing-profiles')).status_code,404)
+        await self.login('finance')
+        self.assertEqual((await self.client.post(f'/api/billing-versions/{version["id"]}/verify',json={'expected_revision':2,'expected_profile_revision':1,'decision':'approve','verification_note':'核对完成'})).status_code,200)
+        await self.login('clerk')
+        self.assertEqual((await self.client.get(f'/api/customers/{customer_id}/billing-profiles')).json(),[])
+        self.assertEqual((await self.client.post(f'/api/billing-versions/{version["id"]}/reveal',json={'purpose':'读取已确认资料'})).status_code,404)
+
+    async def test_merge_preserves_snapshot_and_transfer_removes_old_access(self):
+        with SessionLocal() as db:
+            source=models.Customer(name='合并原主体',tax_id='MERGE-OLD',identity_status='confirmed')
+            target=models.Customer(name='合并保留主体',tax_id='MERGE-NEW',identity_status='confirmed')
+            db.add_all([source,target]);db.commit()
+            source_id,target_id=source.id,target.id
+        await self.login()
+        project=await self.new_project(customer_id=source_id,customer_name='合并原主体')
+        profile,version=await self.verified_profile(customer_id=source_id)
+        url=f'/api/projects/{project["id"]}/finance/invoices'
+        result=await self.client.post(url,json={'amount':'9.99','occurred_on':'2026-10-02','expected_project_revision':project['revision'],'billing_profile_id':profile['id'],'billing_version_id':version['id'],'expected_profile_revision':profile['revision']},headers={'Idempotency-Key':'merge-invoice'})
+        self.assertEqual(result.status_code,200,result.text)
+        snapshot_url=url+f'/{result.json()["id"]}/billing-snapshot'
+        merge_data={'target_id':target_id,'expected_revision':1,'expected_target_revision':1,'reason':'同一主体重复建档核对','identity_checked':True,'dry_run':True}
+        self.assertEqual((await self.client.post(f'/api/customers/{source_id}/merge',json=merge_data)).json()['project_count'],1)
+        self.assertEqual((await self.client.post(f'/api/customers/{source_id}/merge',json={**merge_data,'dry_run':False})).status_code,200)
+        latest=(await self.client.get(f'/api/projects/{project["id"]}')).json()
+        self.assertEqual(latest['customer_id'],target_id)
+        self.assertEqual(latest['customer_name'],'合并原主体')
+        await self.login('leader')
+        self.assertEqual((await self.client.get(snapshot_url)).json()['fields']['title'],'合并原主体')
+        self.assertEqual((await self.client.post(f'/api/billing-versions/{version["id"]}/reveal',json={'purpose':'查看历史'})).status_code,200)
+        await self.login()
+        moved=await self.client.patch(f'/api/projects/{project["id"]}',json={'expected_revision':latest['revision'],'leader_id':self.outsider_id,'reason':'正式移交'})
+        self.assertEqual(moved.status_code,200,moved.text)
+        await self.login('leader')
+        self.assertEqual((await self.client.get(snapshot_url)).status_code,404)
+        self.assertEqual((await self.client.post(f'/api/billing-versions/{version["id"]}/reveal',json={'purpose':'移交后猜测'})).status_code,404)
+
+    async def test_default_profile_and_database_immutable_records(self):
+        from sqlalchemy.exc import IntegrityError
+        await self.login()
+        first,version=await self.verified_profile()
+        second,_=await self.verified_profile()
+        for profile in (first,second):
+            response=await self.client.patch(f'/api/billing-profiles/{profile["id"]}',json={'expected_revision':profile['revision'],'is_default':True})
+            self.assertEqual(response.status_code,200,response.text)
+        with SessionLocal() as db:
+            self.assertEqual(db.query(models.BillingProfile).filter_by(customer_id=self.customer_id,is_default=True,is_active=True).count(),1)
+        for sql in (f"UPDATE customer_billing_versions SET public_json='{{}}' WHERE id={version['id']}",f"DELETE FROM customer_billing_versions WHERE id={version['id']}","DELETE FROM audit_events"):
+            with engine.begin() as connection:
+                with self.assertRaises(IntegrityError):
+                    connection.exec_driver_sql(sql)
+
+    async def test_project_requests_execute_once_and_reject_stale_project(self):
+        await self.login()
+        project=await self.new_project()
+        await self.login('leader')
+        request=await self.client.post(f'/api/projects/{project["id"]}/change-requests',json={'expected_revision':1,'kind':'transfer','target_leader_id':self.outsider_id,'reason':'项目交接'})
+        self.assertEqual(request.status_code,200,request.text)
+        await self.login('number')
+        url=f'/api/project-change-requests/{request.json()["id"]}/review'
+        decision={'expected_revision':1,'decision':'approve','reason':'核对人员资格和交接清单'}
+        self.assertEqual((await self.client.post(url,json=decision)).status_code,200)
+        self.assertEqual((await self.client.post(url,json=decision)).status_code,409)
+        self.assertEqual((await self.client.get(f'/api/projects/{project["id"]}')).json()['leader_id'],self.outsider_id)
+        await self.login('leader')
+        self.assertEqual((await self.client.get(f'/api/projects/{project["id"]}')).status_code,403)
+        await self.login()
+        project=await self.new_project()
+        await self.login('leader')
+        request=await self.client.post(f'/api/projects/{project["id"]}/change-requests',json={'expected_revision':1,'kind':'transfer','target_leader_id':self.outsider_id,'reason':'申请后项目变化'})
+        changed=await self.client.patch(f'/api/projects/{project["id"]}',json={'expected_revision':1,'contract_no':'新合同'})
+        self.assertEqual(changed.status_code,200,changed.text)
+        await self.login()
+        self.assertEqual((await self.client.post(f'/api/project-change-requests/{request.json()["id"]}/review',json=decision)).status_code,409)
+
+    async def test_project_customer_correction_preserves_historical_identity(self):
+        await self.login()
+        project=await self.new_project()
+        customer=await self.client.post('/api/customers',json={'name':'纠错目标','tax_id':'CORRECTION-TAX','type':'enterprise'})
+        customer_id=customer.json()['id']
+        with SessionLocal() as db:
+            db.get(models.Customer,customer_id).identity_status='confirmed';db.commit()
+        data={'expected_revision':1,'customer_id':customer_id,'identity_checked':True,'reason':'已核对项目合同购买主体'}
+        await self.login('finance')
+        self.assertEqual((await self.client.post(f'/api/projects/{project["id"]}/correct-customer',json=data)).status_code,403)
+        await self.login()
+        self.assertEqual((await self.client.post(f'/api/projects/{project["id"]}/correct-customer',json=data)).status_code,200)
+        latest=(await self.client.get(f'/api/projects/{project["id"]}')).json()
+        self.assertEqual(latest['customer_id'],customer_id)
+        self.assertEqual(latest['customer_name'],project['customer_name'])
+        self.assertEqual((await self.client.post(f'/api/projects/{project["id"]}/correct-customer',json=data)).status_code,409)
 
     async def test_password_change_revokes_other_device(self):
         await self.login("leader")

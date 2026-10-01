@@ -141,9 +141,9 @@ export default function UserManagement() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">用户管理</h1>
-        <div className="flex items-center gap-4">
+      <div className="flex flex-wrap gap-3 items-center justify-between">
+        <h1 className="text-2xl font-bold whitespace-nowrap">用户管理</h1>
+        <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <Switch
               id="show-deleted"
@@ -178,8 +178,8 @@ export default function UserManagement() {
         )}
       </div>
 
-      <div className="border rounded-lg">
-        <Table>
+      <div className="border rounded-lg overflow-x-auto">
+        <Table className="min-w-[900px] [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
           <TableHeader>
             <TableRow>
               <TableHead>用户名</TableHead>

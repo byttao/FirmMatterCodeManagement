@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { MoneyInput } from '@/components/ui/money-input'
 import { FinancialLedger } from '@/components/FinancialLedger'
+import ProjectActions from '@/components/ProjectActions'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -1041,6 +1042,10 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
             </div>
           </CardContent>
         </Card>
+
+        {project && (user?.permissions.includes('billing.read.all') || (project.leader_id === user?.id && user?.permissions.includes('billing.read.led'))) && <section className="border-t pt-4"><Button type="button" variant="outline" onClick={()=>confirmDirty(()=>navigate(`/customers/${project.customer_id}`))}>客户与开票资料</Button></section>}
+
+        {project && <ProjectActions project={project} onChange={setProject} />}
 
         {/* 财务信息 */}
         {(isEdit || isPreview) && canReadMoney && (

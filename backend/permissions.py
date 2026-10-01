@@ -29,7 +29,7 @@ ROLE_PERMISSIONS = {
         "number.issue.led", "customer.lookup", "customer.read.related", "customer.propose.led",
         "billing.read.led", "billing.propose.led", "finance.summary.led", "contract.write.led",
     },
-    "clerk": {"customer.lookup", "customer.propose"},
+    "clerk": {"customer.lookup", "customer.propose", "billing.propose.new"},
 }
 SPECIAL_GRANTS = {"project.export.related", "billing.export_sensitive"}
 
@@ -78,7 +78,17 @@ def can_read_customer(user, customer, db, billing=False):
     action = "billing.read.led" if billing else "customer.read.related"
     if not has(user, action):
         return False
-    query = db.query(models.Project.id).filter_by(customer_id=customer.id, is_deleted=False)
+    scope_id = customer.id
+    visited = set()
+    while customer.merged_into_id:
+        if customer.id in visited:
+            return False
+        visited.add(customer.id)
+        customer = db.get(models.Customer, customer.merged_into_id)
+        if not customer:
+            return False
+        scope_id = customer.id
+    query = db.query(models.Project.id).filter_by(customer_id=scope_id, is_deleted=False)
     return query.filter(models.Project.leader_id == user.id if billing else related_clause(user)).first() is not None
 
 

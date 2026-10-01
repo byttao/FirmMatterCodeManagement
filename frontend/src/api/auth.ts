@@ -63,6 +63,9 @@ export const brandingApi = {
 
 export const customerApi = {
   list: (search?: string, page = 1, include_disabled = false) => api.get<{items: Customer[]; total: number}>('/customers', { params: { search, page, include_disabled } }),
+  get: (id: number) => api.get<Customer>(`/customers/${id}`),
+  changes: (id: number) => api.get(`/customers/${id}/changes`),
+  merge: (id: number, data: {target_id: number; expected_revision: number; expected_target_revision: number; reason: string; identity_checked: boolean; dry_run: boolean}) => api.post(`/customers/${id}/merge`, data),
   lookup: (q: string, cursor = 0) => api.get<{items: {id: number; name: string; tax_id_masked: string | null; identity_status: string}[]; next_cursor: number | null}>('/customers/lookup', {params: {q, cursor}}),
   match: (tax_id: string) => api.post('/customers/match', {tax_id}),
   create: (data: { tax_id: string | null; name: string; type: Customer['type'] }) => api.post<Customer>('/customers', data),
@@ -91,6 +94,7 @@ export const projectApi = {
   list: (params?: {
     page?: number
     fiscal_year?: number
+    customer_id?: number
     page_size?: number
     search?: string
     firm?: string
@@ -122,14 +126,34 @@ export const projectApi = {
 }
 
 export const financeApi = {
-  list: (projectId: number, kind: FinanceKind) =>
-    api.get<FinancialEntry[]>(`/projects/${projectId}/finance/${kind}`),
-  create: (projectId: number, kind: FinanceKind, data: FinancialEntryInput) =>
-    api.post<FinancialEntry>(`/projects/${projectId}/finance/${kind}`, data),
-  update: (projectId: number, kind: FinanceKind, entryId: number, data: FinancialEntryInput) =>
-    api.put<FinancialEntry>(`/projects/${projectId}/finance/${kind}/${entryId}`, data),
-  delete: (projectId: number, kind: FinanceKind, entryId: number) =>
-    api.delete(`/projects/${projectId}/finance/${kind}/${entryId}`),
+  list: (projectId: number, kind: FinanceKind, page = 1) =>
+    api.get<{items: FinancialEntry[]; total: number}>(`/projects/${projectId}/finance/${kind}`, {params:{page}}),
+  create: (projectId: number, kind: FinanceKind, data: FinancialEntryInput, key: string) =>
+    api.post<FinancialEntry>(`/projects/${projectId}/finance/${kind}`, data, {headers: {'Idempotency-Key': key}}),
+  void: (projectId: number, kind: FinanceKind, entryId: number, expected_revision: number, reason: string) =>
+    api.post(`/projects/${projectId}/finance/${kind}/${entryId}/void`, {expected_revision, reason}),
+  snapshot: (projectId: number, entryId: number) => api.get(`/projects/${projectId}/finance/invoices/${entryId}/billing-snapshot`),
+}
+
+export const billingApi = {
+  profiles: (customerId: number) => api.get(`/customers/${customerId}/billing-profiles`),
+  create: (customerId: number, label: string, fields: Record<string, unknown>) => api.post(`/customers/${customerId}/billing-profiles`, {label, fields}),
+  newVersion: (profileId: number, expected_profile_revision: number, fields: Record<string, unknown>) => api.post(`/billing-profiles/${profileId}/versions`, {expected_profile_revision, fields}),
+  update: (versionId: number, expected_revision: number, fields: Record<string, unknown>) => api.patch(`/billing-versions/${versionId}`, {expected_revision, fields}),
+  submit: (versionId: number, expected_revision: number) => api.post(`/billing-versions/${versionId}/submit`, {expected_revision}),
+  verify: (versionId: number, expected_revision: number, expected_profile_revision: number, decision: string, verification_note: string) => api.post(`/billing-versions/${versionId}/verify`, {expected_revision, expected_profile_revision, decision, verification_note}),
+  preview: (versionId: number) => api.post(`/billing-versions/${versionId}/verification-preview`, {purpose: '核验开票资料差异'}),
+  reveal: (versionId: number) => api.post(`/billing-versions/${versionId}/reveal`, {purpose: '核对或提供复制资料'}),
+  configure: (profileId: number, expected_revision: number, changes: Record<string, unknown>) => api.patch(`/billing-profiles/${profileId}`, {expected_revision, ...changes}),
+  worklist: (status: string, page = 1) => api.get('/billing-worklist', {params: {status, page}}),
+}
+
+export const auditApi = { list: (page = 1, customer_id?: number) => api.get('/audit-events', {params: {page, customer_id}}) }
+export const projectRequestApi = {
+  list: (page = 1) => api.get('/project-change-requests', {params:{page}}),
+  propose: (id: number, data: {expected_revision: number; kind: string; target_leader_id?: number; reason: string}) => api.post(`/projects/${id}/change-requests`, data),
+  review: (id: number, expected_revision: number, decision: string, reason: string) => api.post(`/project-change-requests/${id}/review`, {expected_revision,decision,reason}),
+  correctCustomer: (id: number, expected_revision: number, customer_id: number, reason: string) => api.post(`/projects/${id}/correct-customer`, {expected_revision,customer_id,reason,identity_checked:true}),
 }
 
 // 看板 API

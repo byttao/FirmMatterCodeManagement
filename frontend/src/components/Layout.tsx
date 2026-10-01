@@ -79,6 +79,9 @@ export default function Layout() {
     { path: '/account', label: '账号安全', icon: ShieldCheck, show: true },
     { path: '/', label: '数据看板', icon: LayoutDashboard, show: true },
     { path: '/customers', label: '客户管理', icon: Building2, show: can(user, 'customer.lookup') },
+    { path: '/billing-worklist', label: '开票资料核验', icon: Building2, show: can(user, 'billing.verify') },
+    { path: '/audit-events', label: '操作审计', icon: ShieldCheck, show: can(user, 'audit.read') },
+    { path: '/project-change-requests', label: '项目申请', icon: Briefcase, show: can(user, 'project.transfer') || can(user, 'project.edit.led') },
     { path: '/projects', label: '项目管理', icon: Briefcase, show: canUse('project_management') },
     { path: '/users', label: '用户管理', icon: Users, show: can(user, 'identity.manage') && canUse('user_management') },
     { path: '/signers', label: '签字人管理', icon: PenLine, show: can(user, 'signer.manage') && canUse('signatory_review') },
@@ -173,7 +176,7 @@ export default function Layout() {
         </aside>
 
         {/* 主内容 */}
-        <main className="flex-1 p-6 overflow-auto">
+        <main className="flex-1 min-w-0 p-4 md:p-6 overflow-auto">
           <Outlet />
         </main>
       </div>

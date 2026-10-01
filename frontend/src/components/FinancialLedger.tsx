@@ -1,168 +1,69 @@
-import { useEffect, useState } from 'react'
-import { format } from 'date-fns'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
-import { financeApi, projectApi } from '@/api/auth'
+import { useEffect, useRef, useState } from 'react'
+import { billingLabels, billingValue, localDate } from '@/lib/billing'
+import { Plus, Ban, Eye, ChevronLeft, ChevronRight } from 'lucide-react'
+import { financeApi, projectApi, billingApi, requestKey } from '@/api/auth'
 import type { FinanceKind, FinancialEntry, FinancialEntryInput, Project } from '@/types'
+import { useAuth } from '@/store/AuthContext'
 import { formatCurrency } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { DatePicker } from '@/components/ui/date-picker'
 import { MoneyInput } from '@/components/ui/money-input'
-import { useAuth } from '@/store/AuthContext'
-import {
-  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
-} from '@/components/ui/dialog'
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/components/ui/table'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
-interface Props {
-  project: Project
-  canEdit: boolean
-  onProjectChange: (project: Project) => void
-}
+interface Props {project: Project; canEdit: boolean; onProjectChange: (project: Project) => void}
 
-type Editor = { kind: FinanceKind; entry: FinancialEntry | null } | null
-
-export function FinancialLedger({ project, canEdit, onProjectChange }: Props) {
+export function FinancialLedger({project, canEdit, onProjectChange}: Props) {
   const { user } = useAuth()
   const readEntries = !!user?.permissions.includes('finance.read.all')
-  const [invoices, setInvoices] = useState<FinancialEntry[]>([])
-  const [receipts, setReceipts] = useState<FinancialEntry[]>([])
-  const [loading, setLoading] = useState(true)
+  const [records, setRecords] = useState<Record<FinanceKind, {items: FinancialEntry[]; total: number}>>({invoices:{items:[],total:0},receipts:{items:[],total:0}})
+  const [pages, setPages] = useState({invoices:1,receipts:1})
+  const [kind, setKind] = useState<FinanceKind | null>(null)
+  const [form, setForm] = useState<FinancialEntryInput>({amount:0,occurred_on:'',expected_project_revision:project.revision})
+  const [profiles, setProfiles] = useState<any[]>([])
   const [saving, setSaving] = useState(false)
-  const [editor, setEditor] = useState<Editor>(null)
-  const [form, setForm] = useState<FinancialEntryInput>({ amount: 0, occurred_on: '', reference: '', note: '' })
-
+  const [error, setError] = useState('')
+  const [snapshot, setSnapshot] = useState<any>(null)
+  const pending = useRef<{payload: string; key: string} | null>(null)
   const load = async () => {
-    const [invoiceResult, receiptResult] = await Promise.all([
-      financeApi.list(project.id, 'invoices'), financeApi.list(project.id, 'receipts'),
-    ])
-    setInvoices(invoiceResult.data)
-    setReceipts(receiptResult.data)
-    setLoading(false)
+    const [invoices, receipts] = await Promise.all([financeApi.list(project.id,'invoices',pages.invoices), financeApi.list(project.id,'receipts',pages.receipts)])
+    setRecords({invoices:invoices.data,receipts:receipts.data})
   }
-
-  useEffect(() => {
-    if (!readEntries) {setInvoices([]); setReceipts([]); setLoading(false); return}
-    load().catch(() => {
-      setLoading(false)
-      alert('财务记录加载失败')
-    })
-  }, [project.id, readEntries])
-
-  const openEditor = (kind: FinanceKind, entry: FinancialEntry | null = null) => {
-    setForm({
-      amount: entry?.amount ?? 0,
-      occurred_on: entry ? entry.occurred_on : format(new Date(), 'yyyy-MM-dd'),
-      reference: entry?.reference ?? '',
-      note: entry?.note ?? '',
-    })
-    setEditor({ kind, entry })
+  useEffect(()=>{if(readEntries)load().catch((e:any)=>setError(e.response?.data?.detail||'无法加载财务记录'))},[project.id,readEntries,pages])
+  const refresh = async () => {await load(); onProjectChange((await projectApi.get(project.id)).data)}
+  const open = async (selected: FinanceKind, replacement?: FinancialEntry) => {
+    setError(''); pending.current=null
+    setForm({amount:replacement?.amount||0, occurred_on:localDate(), reference:'',note:'',expected_project_revision:project.revision,replacement_of_id:replacement?.id})
+    if(selected==='invoices') {
+      try{setProfiles((await billingApi.profiles(project.customer_id)).data)}catch(e:any){setError(e.response?.data?.detail||'无法加载开票档案')}
+    }
+    setKind(selected)
   }
-
-  const refresh = async () => {
-    const [_, current] = await Promise.all([load(), projectApi.get(project.id)])
-    onProjectChange(current.data)
-  }
-
   const save = async () => {
-    if (!editor || saving) return
-    if (!Number.isFinite(form.amount) || form.amount <= 0 || !/^\d+(\.\d{1,2})?$/.test(String(form.amount))) {
-      alert('请输入大于零且最多两位小数的金额')
-      return
-    }
-    if (!form.occurred_on && !editor.entry?.is_legacy) {
-      alert('请选择日期')
-      return
-    }
+    if(!kind || saving || !form.occurred_on || form.amount<=0) return
     setSaving(true)
     try {
-      if (editor.entry) {
-        await financeApi.update(project.id, editor.kind, editor.entry.id, form)
-      } else {
-        await financeApi.create(project.id, editor.kind, form)
-      }
-      await refresh()
-      setEditor(null)
-    } catch (err: any) {
-      alert(err.response?.data?.detail || '财务记录保存失败')
-    } finally {
-      setSaving(false)
-    }
+      const payload=JSON.stringify(form)
+      if(pending.current?.payload!==payload)pending.current={payload,key:requestKey()}
+      await financeApi.create(project.id,kind,form,pending.current!.key)
+      await refresh(); setKind(null); pending.current=null
+    }catch(e:any){setError(e.response?.data?.detail||'登记失败，草稿已保留')}
+    finally{setSaving(false)}
   }
-
-  const remove = async (kind: FinanceKind, entry: FinancialEntry) => {
-    if (!window.confirm(`确认删除这笔${kind === 'invoices' ? '开票' : '收款'}记录？`)) return
-    try {
-      await financeApi.delete(project.id, kind, entry.id)
-      await refresh()
-    } catch (err: any) {
-      alert(err.response?.data?.detail || '删除失败')
-    }
+  const voidEntry = async (selected: FinanceKind, entry: FinancialEntry) => {
+    const reason=window.prompt('登记作废原因（税务平台作废或红冲须另行办理）')
+    if(!reason?.trim())return
+    try{await financeApi.void(project.id,selected,entry.id,entry.revision,reason); await refresh()}catch(e:any){setError(e.response?.data?.detail||'作废失败')}
   }
-
-  const sections: { kind: FinanceKind; title: string; entries: FinancialEntry[]; total: number | null }[] = [
-    { kind: 'invoices', title: '开票记录', entries: invoices, total: project.invoiced_amount },
-    { kind: 'receipts', title: '收款记录', entries: receipts, total: project.received_amount },
-  ]
-
-  return (
-    <div className="space-y-7">
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-        <div><div className="text-muted-foreground">合同金额</div><strong>{formatCurrency(project.contract_amount)}</strong></div>
-        <div><div className="text-muted-foreground">已开票</div><strong>{formatCurrency(project.invoiced_amount)}</strong></div>
-        <div><div className="text-muted-foreground">未开票</div><strong>{formatCurrency(project.uninvoiced_amount)}</strong></div>
-        <div><div className="text-muted-foreground">已收款</div><strong>{formatCurrency(project.received_amount)}</strong></div>
-        <div><div className="text-muted-foreground">未收款</div><strong>{formatCurrency(project.unreceived_amount)}</strong></div>
-      </div>
-
-      {readEntries && sections.map(section => (
-        <section key={section.kind} className="space-y-2">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold">{section.title} <span className="font-normal text-muted-foreground">合计 {formatCurrency(section.total)}</span></h3>
-            {canEdit && <Button type="button" size="sm" variant="outline" onClick={() => openEditor(section.kind)}><Plus className="w-4 h-4 mr-1" />新增</Button>}
-          </div>
-          <Table>
-            <TableHeader><TableRow>
-              <TableHead className="w-28">日期</TableHead><TableHead className="w-32">金额</TableHead>
-              <TableHead className="w-40">{section.kind === 'invoices' ? '发票号码' : '到账凭证'}</TableHead>
-              <TableHead>备注</TableHead>{canEdit && <TableHead className="w-24 text-right">操作</TableHead>}
-            </TableRow></TableHeader>
-            <TableBody>
-              {loading ? <TableRow><TableCell colSpan={canEdit ? 5 : 4}>加载中...</TableCell></TableRow> :
-                section.entries.length === 0 ? <TableRow><TableCell colSpan={canEdit ? 5 : 4} className="text-muted-foreground">暂无记录</TableCell></TableRow> :
-                section.entries.map(entry => <TableRow key={entry.id}>
-                  <TableCell>{entry.occurred_on || '日期未登记'}</TableCell>
-                  <TableCell className="font-medium tabular-nums">{formatCurrency(entry.amount)}</TableCell>
-                  <TableCell>{entry.reference || '-'}</TableCell>
-                  <TableCell>{entry.is_legacy ? `旧版汇总数据${entry.note && entry.note !== '旧版汇总数据' ? ` · ${entry.note}` : ''}` : (entry.note || '-')}</TableCell>
-                  {canEdit && <TableCell className="text-right whitespace-nowrap">
-                    <Button type="button" size="icon" variant="ghost" title="编辑记录" onClick={() => openEditor(section.kind, entry)}><Pencil className="w-4 h-4" /></Button>
-                    <Button type="button" size="icon" variant="ghost" title="删除记录" onClick={() => remove(section.kind, entry)}><Trash2 className="w-4 h-4" /></Button>
-                  </TableCell>}
-                </TableRow>)}
-            </TableBody>
-          </Table>
-        </section>
-      ))}
-
-      <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null) }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>{editor?.entry ? '编辑' : '新增'}{editor?.kind === 'invoices' ? '开票' : '收款'}记录</DialogTitle></DialogHeader>
-          <div className="grid gap-4 py-2">
-            <div className="space-y-2"><Label>金额</Label><MoneyInput value={form.amount} onChange={amount => setForm(prev => ({ ...prev, amount }))} /></div>
-            <div className="space-y-2"><Label>日期</Label><DatePicker value={form.occurred_on || ''} onChange={occurred_on => setForm(prev => ({ ...prev, occurred_on }))} /></div>
-            <div className="space-y-2"><Label>{editor?.kind === 'invoices' ? '发票号码' : '到账凭证'}（选填）</Label><Input maxLength={100} value={form.reference || ''} onChange={e => setForm(prev => ({ ...prev, reference: e.target.value }))} /></div>
-            <div className="space-y-2"><Label>备注（选填）</Label><Input maxLength={500} value={form.note || ''} onChange={e => setForm(prev => ({ ...prev, note: e.target.value }))} /></div>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setEditor(null)} disabled={saving}>取消</Button>
-            <Button type="button" onClick={save} disabled={saving}>{saving ? '保存中...' : '保存记录'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  )
+  const showSnapshot = async (entry: FinancialEntry) => {
+    try{setSnapshot((await financeApi.snapshot(project.id,entry.id)).data)}catch(e:any){setError(e.response?.data?.detail||'无法读取历史快照')}
+  }
+  return <div className="space-y-5">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">{[['合同金额',project.contract_amount],['已开票',project.invoiced_amount],['未开票',project.uninvoiced_amount],['已收款',project.received_amount],['未收款',project.unreceived_amount]].map(([label,value])=><div key={String(label)}><p className="text-muted-foreground">{label}</p><strong>{formatCurrency(value as number|null)}</strong></div>)}</div>
+    {error&&<p role="alert" className="text-sm text-destructive">{error}</p>}
+    {readEntries&&(['invoices','receipts'] as FinanceKind[]).map(selected=><section key={selected} className="space-y-2"><div className="flex justify-between items-center"><h3 className="font-medium">{selected==='invoices'?'开票记录':'收款记录'}</h3>{canEdit&&<Button type="button" size="sm" variant="outline" onClick={()=>open(selected)}><Plus className="mr-2 h-4 w-4" />登记</Button>}</div><div className="border rounded-md overflow-x-auto"><Table className="min-w-[640px]"><TableHeader><TableRow><TableHead>日期</TableHead><TableHead>金额</TableHead><TableHead>凭证</TableHead><TableHead>备注 / 作废原因</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{records[selected].items.map(entry=><TableRow key={entry.id}><TableCell>{entry.occurred_on}</TableCell><TableCell>{formatCurrency(entry.amount)}</TableCell><TableCell>{entry.reference}</TableCell><TableCell>{entry.note}{entry.void_reason&&<p className="text-destructive">{entry.void_reason}</p>}</TableCell><TableCell>{entry.voided_at?'已作废':'有效'}</TableCell><TableCell><div className="flex gap-1">{selected==='invoices'&&<Button type="button" size="icon" title="历史开票快照" variant="ghost" onClick={()=>showSnapshot(entry)}><Eye className="h-4 w-4" /></Button>}{canEdit&&!entry.voided_at&&<Button type="button" size="icon" title="作废登记" variant="ghost" onClick={()=>voidEntry(selected,entry)}><Ban className="h-4 w-4" /></Button>}{canEdit&&entry.voided_at&&<Button type="button" size="icon" title="登记替换记录" variant="ghost" onClick={()=>open(selected,entry)}><Plus className="h-4 w-4" /></Button>}</div></TableCell></TableRow>)}</TableBody></Table></div><div className="flex justify-between items-center text-sm"><span>共 {records[selected].total} 项</span><div className="flex gap-1"><Button type="button" size="icon" title="上一页" variant="ghost" disabled={pages[selected]===1} onClick={()=>setPages({...pages,[selected]:pages[selected]-1})}><ChevronLeft /></Button><Button type="button" size="icon" title="下一页" variant="ghost" disabled={pages[selected]*50>=records[selected].total} onClick={()=>setPages({...pages,[selected]:pages[selected]+1})}><ChevronRight /></Button></div></div></section>)}
+    <Dialog open={!!kind} onOpenChange={open=>{if(!open&&window.confirm('关闭未登记草稿？'))setKind(null)}}><DialogContent><DialogHeader><DialogTitle>{kind==='invoices'?'登记开票':'登记收款'}</DialogTitle></DialogHeader><form className="space-y-3" onSubmit={e=>{e.preventDefault();e.stopPropagation();save()}}><div><Label>金额</Label><MoneyInput value={form.amount} onChange={amount=>setForm({...form,amount})} /></div><div><Label>日期</Label><Input type="date" required value={form.occurred_on||''} onChange={e=>setForm({...form,occurred_on:e.target.value})} /></div><div><Label>凭证号</Label><Input maxLength={100} value={form.reference||''} onChange={e=>setForm({...form,reference:e.target.value})} /></div><div><Label>备注</Label><Input maxLength={500} value={form.note||''} onChange={e=>setForm({...form,note:e.target.value})} /></div>{kind==='invoices'&&<div><Label>已确认开票档案</Label><select required className="w-full h-10 border rounded-md bg-white px-2" value={form.billing_profile_id||''} onChange={e=>{const profile=profiles.find(p=>p.id===Number(e.target.value));setForm({...form,billing_profile_id:profile?.id,billing_version_id:profile?.current_verified_version_id,expected_profile_revision:profile?.revision})}}><option value="">选择档案与当前确认版本</option>{profiles.filter(p=>p.is_active&&p.current_verified_version_id).map(p=><option key={p.id} value={p.id}>{p.label} · V{p.versions.find((v:any)=>v.id===p.current_verified_version_id)?.version_no}</option>)}</select></div>}{error&&<p className="text-sm text-destructive">{error}</p>}<DialogFooter><Button disabled={saving||!form.amount||kind==='invoices'&&!form.billing_version_id}>登记</Button></DialogFooter></form></DialogContent></Dialog>
+    <Dialog open={!!snapshot} onOpenChange={open=>{if(!open)setSnapshot(null)}}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>历史开票快照 · V{snapshot?.fields.version_no}</DialogTitle></DialogHeader><dl className="space-y-2 text-sm">{snapshot&&Object.entries(snapshot.fields).map(([key,value])=><div key={key} className="grid grid-cols-2 gap-2"><dt className="text-muted-foreground">{billingLabels[key]||'资料'}</dt><dd className="break-all">{billingValue(key,value)}</dd></div>)}</dl></DialogContent></Dialog>
+  </div>
 }

@@ -321,13 +321,11 @@ class FinancialEntryCreate(InputModel):
     occurred_on: date
     reference: Optional[constr(max_length=100)] = None
     note: Optional[constr(max_length=500)] = None
-
-
-class FinancialEntryUpdate(InputModel):
-    amount: Optional[condecimal(gt=0, max_digits=12, decimal_places=2)] = None
-    occurred_on: Optional[date] = None
-    reference: Optional[constr(max_length=100)] = None
-    note: Optional[constr(max_length=500)] = None
+    expected_project_revision: int
+    billing_profile_id: Optional[int] = None
+    billing_version_id: Optional[int] = None
+    expected_profile_revision: Optional[int] = None
+    replacement_of_id: Optional[int] = None
 
 
 class FinancialEntryResponse(InputModel):
@@ -336,7 +334,11 @@ class FinancialEntryResponse(InputModel):
     occurred_on: Optional[date]
     reference: Optional[str]
     note: Optional[str]
-    is_legacy: bool
+    revision: int
+    voided_at: Optional[datetime]
+    void_reason: Optional[str]
+    replacement_of_id: Optional[int]
+    created_by: int
     created_at: datetime
 
     class Config:

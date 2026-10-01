@@ -24,7 +24,7 @@ from sqlalchemy import text, or_
 import models
 import schemas
 from schema_init import initialize_schema
-from finance import refresh_project_finance, cents
+from finance import refresh_project_finance
 from auth import (
     get_password_hash, verify_password,
     get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -44,9 +44,13 @@ from http_security import install_http_boundary, throttle, clear_session_cookies
 from permissions import has, require, project_scope, related_clause, project_response, can_read_money
 from audit import write_lock, check_revision, event
 from idempotency import lookup as idempotent_lookup, remember
+from data_crypto import initialize_key, key_material
 import asyncio
 
 initialize_schema(engine)
+with SessionLocal() as startup_db:
+    if startup_db.query(models.User.id).first():
+        key_material()
 
 app = FastAPI(title="业码汇 - 事务所业务编号管理", version=APP_VERSION)
 _license_heartbeat_task = None
@@ -382,6 +386,7 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
         db.execute(text("BEGIN IMMEDIATE"))
     if is_system_initialized(db):
         raise HTTPException(status_code=409, detail="系统已经完成安装")
+    initialize_key()
 
     username = data.admin_username.strip()
     real_name = data.admin_real_name.strip()
@@ -1329,6 +1334,7 @@ def loaded_projects(query):
 @app.get("/api/projects", response_model=schemas.ProjectListResponse)
 def list_projects(
     fiscal_year: Optional[int] = None,
+    customer_id: Optional[int] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
@@ -1349,6 +1355,8 @@ def list_projects(
 
     query = project_scope(db.query(models.Project).filter(models.Project.is_deleted == False), current_user)
     query = query.filter(models.Project.fiscal_year == explicit_year(db, fiscal_year))
+    if customer_id is not None:
+        query = query.filter(models.Project.customer_id == customer_id)
 
     # 筛选条件
     if search:
@@ -1525,7 +1533,7 @@ def create_project(
         priority=project_data.priority,
         scale=project_data.scale,
         business_source=project_data.business_source,
-        contract_amount=float(project_data.contract_amount) if project_data.contract_amount is not None else None,
+        contract_amount=project_data.contract_amount,
         signer1_id=project_data.signer1_id,
         signer2_id=project_data.signer2_id,
         report_no_status=models.ReportStatus.PENDING.value,
@@ -1534,7 +1542,6 @@ def create_project(
     db.add(project)
 
     db.flush()
-    db.add(models.FinanceMigration(project_id=project.id))
 
     # 添加团队成员
     for member_id in (project_data.member_ids or []):
@@ -1577,8 +1584,6 @@ def update_project(
     if "contract_amount" in update_data:
         if not (has(current_user, "contract.write.all") or (has(current_user, "contract.write.led") and project.leader_id == current_user.id and not project.report_no)):
             raise HTTPException(403, "无权限修改合同金额")
-        if update_data["contract_amount"] is not None:
-            update_data["contract_amount"] = float(update_data["contract_amount"])
     if project.report_no and any(field in update_data and update_data[field] != getattr(project, field) for field in ("customer_id", "customer_name", "customer_tax_id")):
         raise HTTPException(409, "首次发号后客户归属只能由管理员通过纠错流程调整")
 
@@ -1655,101 +1660,14 @@ def update_project(
     return project_response(project, current_user)
 
 
-def finance_kind(kind: str) -> str:
-    kinds = {"invoices": "invoice", "receipts": "receipt"}
-    if kind not in kinds:
-        raise HTTPException(status_code=404, detail="财务记录类型不存在")
-    return kinds[kind]
-
-
-def finance_project(db: Session, project_id: str, user: models.User, write: bool = False):
-    project = resolve_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="项目不存在")
-    if write and not can_edit_financial_fields(user):
-        raise HTTPException(status_code=403, detail="无权限编辑财务记录")
-    if not can_view_project(user, project):
-        raise HTTPException(status_code=403, detail="无权限查看此项目")
-    if not write:
-        require(user, "finance.read.all")
-    return project
-
-
-@app.get("/api/projects/{project_id}/finance/{kind}", response_model=List[schemas.FinancialEntryResponse])
-def list_financial_entries(
-    project_id: str, kind: str, db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    entry_kind = finance_kind(kind)
-    project = finance_project(db, project_id, current_user)
-    return db.query(models.FinancialEntry).filter_by(
-        project_id=project.id, kind=entry_kind
-    ).order_by(models.FinancialEntry.occurred_on.desc(), models.FinancialEntry.id.desc()).all()
-
-
-@app.post("/api/projects/{project_id}/finance/{kind}", response_model=schemas.FinancialEntryResponse)
-def create_financial_entry(
-    project_id: str, kind: str, data: schemas.FinancialEntryCreate,
-    db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
-):
-    entry_kind = finance_kind(kind)
-    project = finance_project(db, project_id, current_user, write=True)
-    entry = models.FinancialEntry(
-        project_id=project.id, kind=entry_kind, amount_cents=cents(data.amount),
-        occurred_on=data.occurred_on, reference=data.reference, note=data.note,
-    )
-    db.add(entry)
-    db.flush()
-    refresh_project_finance(db, project)
-    db.commit()
-    db.refresh(entry)
-    return entry
-
-
-def get_financial_entry(db: Session, project: models.Project, kind: str, entry_id: int):
-    entry = db.query(models.FinancialEntry).filter_by(
-        id=entry_id, project_id=project.id, kind=finance_kind(kind)
-    ).first()
-    if not entry:
-        raise HTTPException(status_code=404, detail="财务记录不存在")
-    return entry
-
-
-@app.put("/api/projects/{project_id}/finance/{kind}/{entry_id}", response_model=schemas.FinancialEntryResponse)
-def update_financial_entry(
-    project_id: str, kind: str, entry_id: int, data: schemas.FinancialEntryUpdate,
-    db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
-):
-    project = finance_project(db, project_id, current_user, write=True)
-    entry = get_financial_entry(db, project, kind, entry_id)
-    changes = data.dict(exclude_unset=True)
-    if 'occurred_on' in changes and changes['occurred_on'] is None and not entry.is_legacy:
-        raise HTTPException(status_code=400, detail="日期不能为空")
-    if 'amount' in changes:
-        if changes['amount'] is None:
-            raise HTTPException(status_code=400, detail="金额不能为空")
-        entry.amount_cents = cents(changes.pop('amount'))
-    for field, value in changes.items():
-        setattr(entry, field, value)
-    db.flush()
-    refresh_project_finance(db, project)
-    db.commit()
-    db.refresh(entry)
-    return entry
-
-
-@app.delete("/api/projects/{project_id}/finance/{kind}/{entry_id}")
-def delete_financial_entry(
-    project_id: str, kind: str, entry_id: int,
-    db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
-):
-    project = finance_project(db, project_id, current_user, write=True)
-    entry = get_financial_entry(db, project, kind, entry_id)
-    db.delete(entry)
-    db.flush()
-    refresh_project_finance(db, project)
-    db.commit()
-    return {"message": "财务记录已删除"}
+from billing import router as billing_router
+from finance_api import router as finance_router
+app.include_router(billing_router)
+app.include_router(finance_router)
+from audit_api import router as audit_router
+app.include_router(audit_router)
+from project_requests import router as project_requests_router
+app.include_router(project_requests_router)
 
 
 @app.delete("/api/projects/{project_id}")

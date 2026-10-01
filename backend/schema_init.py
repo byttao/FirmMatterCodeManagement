@@ -3,7 +3,7 @@ from sqlalchemy import inspect, text
 from database import Base
 import models  # register tables
 
-SCHEMA_VERSION = 300
+SCHEMA_VERSION = 400
 
 
 def initialize_schema(engine):
@@ -21,6 +21,34 @@ def initialize_schema(engine):
         connection.execute(text("INSERT INTO schema_version VALUES (:version)"), {"version": SCHEMA_VERSION})
         connection.execute(text("CREATE UNIQUE INDEX uq_member ON project_members(project_id,user_id)"))
         connection.execute(text("CREATE UNIQUE INDEX uq_signer ON signers(user_id,signer_type)"))
+        connection.execute(text("CREATE UNIQUE INDEX uq_billing_default ON customer_billing_profiles(customer_id) WHERE is_active=1 AND is_default=1"))
+        connection.execute(text("""CREATE TRIGGER billing_pointer_belongs BEFORE UPDATE OF current_verified_version_id ON customer_billing_profiles
+            WHEN NEW.current_verified_version_id IS NOT NULL AND NOT EXISTS
+            (SELECT 1 FROM customer_billing_versions WHERE id=NEW.current_verified_version_id AND profile_id=NEW.id AND status='verified')
+            BEGIN SELECT RAISE(ABORT, 'billing version does not belong to profile'); END"""))
+        connection.execute(text("""CREATE TRIGGER verified_billing_immutable BEFORE UPDATE ON customer_billing_versions
+            WHEN OLD.status IN ('verified','superseded') AND
+            (NEW.public_json IS NOT OLD.public_json OR NEW.sensitive_ciphertext IS NOT OLD.sensitive_ciphertext
+             OR NEW.profile_id IS NOT OLD.profile_id OR NEW.key_id IS NOT OLD.key_id OR NEW.bank_last4 IS NOT OLD.bank_last4
+             OR NEW.version_no IS NOT OLD.version_no OR NEW.verified_by IS NOT OLD.verified_by OR NEW.verified_at IS NOT OLD.verified_at
+             OR NEW.status NOT IN ('verified','superseded'))
+            BEGIN SELECT RAISE(ABORT, 'verified billing payload is immutable'); END"""))
+        for table in ('invoice_billing_snapshots', 'audit_events'):
+            for action in ('UPDATE', 'DELETE'):
+                connection.execute(text(f"CREATE TRIGGER {table}_no_{action.lower()} BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT, 'immutable record'); END"))
+        connection.execute(text("""CREATE TRIGGER finance_no_delete BEFORE DELETE ON financial_entries
+            BEGIN SELECT RAISE(ABORT, 'void financial records instead'); END"""))
+        connection.execute(text("""CREATE TRIGGER verified_billing_no_delete BEFORE DELETE ON customer_billing_versions
+            WHEN OLD.status IN ('verified','superseded')
+            BEGIN SELECT RAISE(ABORT, 'verified billing record is immutable'); END"""))
+        connection.execute(text("""CREATE TRIGGER finance_payload_immutable BEFORE UPDATE ON financial_entries
+            WHEN NEW.project_id IS NOT OLD.project_id OR NEW.kind IS NOT OLD.kind
+            OR NEW.amount_cents IS NOT OLD.amount_cents OR NEW.occurred_on IS NOT OLD.occurred_on
+            OR NEW.reference IS NOT OLD.reference OR NEW.note IS NOT OLD.note
+            OR NEW.created_by IS NOT OLD.created_by OR NEW.replacement_of_id IS NOT OLD.replacement_of_id
+            OR (OLD.voided_at IS NOT NULL AND (NEW.voided_at IS NOT OLD.voided_at
+              OR NEW.voided_by IS NOT OLD.voided_by OR NEW.void_reason IS NOT OLD.void_reason))
+            BEGIN SELECT RAISE(ABORT, 'void financial records instead'); END"""))
         connection.execute(text("""CREATE TRIGGER report_history_prevent_reuse
             BEFORE UPDATE OF report_no ON projects
             WHEN NEW.report_no IS NOT NULL AND (OLD.report_no IS NULL OR NEW.report_no != OLD.report_no)
