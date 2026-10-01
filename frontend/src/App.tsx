@@ -19,6 +19,8 @@ const BillingWorklist = lazy(() => import('@/pages/BillingWorklist'))
 const AuditEvents = lazy(() => import('@/pages/AuditEvents'))
 const ProjectRequests = lazy(() => import('@/pages/ProjectRequests'))
 const AccountSecurity = lazy(() => import('@/pages/AccountSecurity'))
+const ExportJobs = lazy(() => import('@/pages/ExportJobs'))
+const SystemBackup = lazy(() => import('@/pages/SystemBackup'))
 
 // 布局组件
 import Layout from '@/components/Layout'
@@ -66,6 +68,8 @@ function AppRoutes() {
         <Route path="audit-events" element={<AuditEvents />} />
         <Route path="project-change-requests" element={<ProjectRequests />} />
         <Route path="account" element={<AccountSecurity />} />
+        <Route path="exports" element={<ExportJobs />} />
+        <Route path="system-backup" element={<SystemBackup />} />
       </Route>
       <Route path="*" element={<Navigate to="/projects" replace />} />
     </Routes></Suspense>

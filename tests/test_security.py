@@ -544,10 +544,246 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.json()["detail"]["request_id"], response.headers["X-Request-ID"])
 
+    async def export_job(self,**changes):
+        import secrets
+        payload={'export_type':'projects','filters':{'fiscal_year':2026},'columns':['project_id','customer_name']}
+        payload.update(changes)
+        response=await self.client.post('/api/export-jobs',json=payload,headers={'Idempotency-Key':secrets.token_hex(16)})
+        self.assertEqual(response.status_code,202,response.text)
+        return response.json()
+
+    async def test_export_idempotency_limits_scope_and_download_revalidation(self):
+        import secrets
+        import exports
+        from io import BytesIO
+        from openpyxl import load_workbook
+        await self.login('number')
+        denied=await self.client.post('/api/export-jobs',json={'filters':{'fiscal_year':2026},'columns':['contract_amount']},headers={'Idempotency-Key':secrets.token_hex(16)})
+        self.assertEqual(denied.status_code,403)
+        key=secrets.token_hex(16);payload={'filters':{'fiscal_year':2026},'columns':['project_id','customer_name']}
+        response=await self.client.post('/api/export-jobs',json=payload,headers={'Idempotency-Key':key});self.assertEqual(response.status_code,202,response.text)
+        first=response.json()
+        retry=await self.client.post('/api/export-jobs',json=payload,headers={'Idempotency-Key':key})
+        self.assertEqual(first['id'],retry.json()['id'])
+        changed=await self.client.post('/api/export-jobs',json={**payload,'columns':['project_id']},headers={'Idempotency-Key':key})
+        self.assertEqual(changed.status_code,409)
+        second=await self.export_job()
+        third=await self.client.post('/api/export-jobs',json=payload,headers={'Idempotency-Key':secrets.token_hex(16)})
+        self.assertEqual(third.status_code,429)
+        self.assertEqual((await self.client.post('/api/export-jobs/'+second['id']+'/cancel')).status_code,200)
+        claimed=await asyncio.to_thread(exports.claim);self.assertEqual(claimed,first['id'])
+        await asyncio.to_thread(exports.generate,claimed)
+        state=(await self.client.get('/api/export-jobs/'+claimed)).json();self.assertEqual(state['status'],'succeeded',state)
+        downloaded=await self.client.get('/api/export-jobs/'+claimed+'/download');self.assertEqual(downloaded.status_code,200,downloaded.text[:100])
+        workbook=load_workbook(BytesIO(downloaded.content),read_only=True)
+        self.assertEqual(list(workbook['资料'].values)[0],('项目ID','客户名称'));workbook.close()
+        await self.login('outsider');self.assertEqual((await self.client.get('/api/export-jobs/'+claimed+'/download')).status_code,404)
+        await self.login('number')
+        with SessionLocal() as db:
+            project=db.get(models.Project,1);project.leader_id=self.outsider_id;db.commit()
+        self.assertEqual((await self.client.get('/api/export-jobs/'+claimed+'/download')).status_code,403)
+        with SessionLocal() as db:db.get(models.Project,1).leader_id=self.leader_id;db.commit()
+
+    async def test_export_worker_process_cancel_restart_ttl_and_formula_safety(self):
+        import exports,subprocess,time
+        from unittest.mock import patch
+        from io import BytesIO
+        from openpyxl import load_workbook
+        await self.login()
+        project=await self.new_project(customer_name='=危险公式')
+        with SessionLocal() as db:
+            db.get(models.Project,project['id']).customer_name='=危险公式';db.commit()
+        job=await self.export_job(filters={'fiscal_year':2026,'search':project['project_id']})
+        worker=subprocess.Popen([sys.executable,str(Path(main.__file__).with_name('export_worker.py'))],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                state=(await self.client.get('/api/export-jobs/'+job['id'])).json()
+                if state['status'] not in ('queued','running'):break
+                await asyncio.sleep(.1)
+            self.assertEqual(state['status'],'succeeded',state)
+            downloaded=await self.client.get('/api/export-jobs/'+job['id']+'/download')
+            workbook=load_workbook(BytesIO(downloaded.content),read_only=True)
+            self.assertEqual(list(workbook['资料'].values)[1][1],"'=危险公式");workbook.close()
+            second=subprocess.run([sys.executable,str(Path(main.__file__).with_name('export_worker.py'))],timeout=5)
+            self.assertEqual(second.returncode,0)
+        finally:worker.terminate();worker.wait(timeout=5)
+        with SessionLocal() as db:db.get(models.ExportJob,job['id']).expires_at=datetime(2000,1,1);db.commit()
+        exports.cleanup();self.assertEqual((await self.client.get('/api/export-jobs/'+job['id']+'/download')).status_code,410)
+        queued=await self.export_job();running=exports.claim();self.assertEqual(running,queued['id'])
+        self.assertEqual((await self.client.post('/api/export-jobs/'+running+'/cancel')).status_code,200)
+        await asyncio.to_thread(exports.generate,running)
+        self.assertEqual((await self.client.get('/api/export-jobs/'+running)).json()['status'],'cancelled')
+        interrupted=await self.export_job();exports.claim();exports.cleanup(restart=True)
+        state=(await self.client.get('/api/export-jobs/'+interrupted['id'])).json()
+        self.assertEqual(state['error_code'],'interrupted')
+        budget=await self.export_job();exports.claim()
+        with patch.object(exports,'MAX_ROWS',0):await asyncio.to_thread(exports.generate,budget['id'])
+        self.assertEqual((await self.client.get('/api/export-jobs/'+budget['id'])).json()['error_code'],'row_limit_exceeded')
+
+    async def test_encrypted_backup_restore_preserves_identity_and_requires_reconciliation(self):
+        from backups import FILES,validate_restored
+        from backup_crypto import restore
+        from schema_init import SCHEMA_VERSION
+        await self.login()
+        result=await self.client.post('/api/system/backup',json={'password':'Backup-test-password-2026'})
+        self.assertEqual(result.status_code,200,result.text[:100])
+        self.assertNotIn(b'Test-password-2026',result.content)
+        with tempfile.TemporaryDirectory() as temporary:
+            target=Path(temporary)/'restored'
+            restore(result.content,'Backup-test-password-2026',target,'YMH-FMC',SCHEMA_VERSION,'db.sqlite',FILES,validate_restored)
+            self.assertEqual((target/'billing.key').read_bytes(),(Path(TEST_DIR.name)/'billing.key').read_bytes())
+            self.assertEqual((target/'device-identity.json').read_bytes(),(Path(TEST_DIR.name)/'device-identity.json').read_bytes())
+            with sqlite3.connect(target/'db.sqlite') as db:
+                self.assertEqual(db.execute("SELECT value FROM app_settings WHERE key='restore_hold'").fetchone()[0],'{"required":true}')
+                self.assertEqual(db.execute('SELECT count(*) FROM auth_sessions WHERE revoked_at IS NULL').fetchone()[0],0)
+                self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+            for blob,password in ((result.content,'wrong-password-2026'),(result.content[:-1]+bytes([result.content[-1]^1]),'Backup-test-password-2026')):
+                with self.assertRaises(ValueError):restore(blob,password,Path(temporary)/'bad','YMH-FMC',SCHEMA_VERSION,'db.sqlite',FILES,validate_restored)
+            with self.assertRaises(ValueError):restore(result.content,'Backup-test-password-2026',target,'YMH-FMC',SCHEMA_VERSION,'db.sqlite',FILES,validate_restored)
+
+    async def test_export_batches_use_one_snapshot_and_sensitive_requires_separate_grant(self):
+        import exports,secrets
+        from unittest.mock import patch
+        from io import BytesIO
+        from openpyxl import load_workbook
+        await self.login()
+        prefix=secrets.token_hex(6)
+        with SessionLocal() as db:
+            rows=[models.Project(project_id=prefix+'-'+str(i),firm=prefix,report_type='审计',report_year=2026,
+                fiscal_year=2026,customer_name='原名称',customer_id=self.customer_id,leader_id=self.leader_id) for i in range(550)]
+            db.add_all(rows);db.flush();last_id=rows[-1].id;db.commit()
+        job=await self.export_job(filters={'fiscal_year':2026,'firm':prefix})
+        self.assertEqual(exports.claim(),job['id'])
+        original=exports.check;calls=0
+        def concurrent_change(*args):
+            nonlocal calls
+            calls+=1
+            if calls==3:
+                with SessionLocal() as db:db.get(models.Project,last_id).customer_name='并发新名称';db.commit()
+            original(*args)
+        with patch.object(exports,'check',side_effect=concurrent_change):await asyncio.to_thread(exports.generate,job['id'])
+        downloaded=await self.client.get('/api/export-jobs/'+job['id']+'/download')
+        self.assertEqual(downloaded.status_code,200,downloaded.text[:100])
+        book=load_workbook(BytesIO(downloaded.content),read_only=True)
+        values=list(book['资料'].values);self.assertEqual(len(values),551)
+        self.assertEqual({row[1] for row in values[1:]},{'原名称'});book.close()
+        await self.login('finance')
+        response=await self.client.post('/api/export-jobs',json={'export_type':'billing_sensitive','purpose':'测试','confirm_sensitive':True},headers={'Idempotency-Key':secrets.token_hex(16)})
+        self.assertEqual(response.status_code,403)
+        await self.login()
+        response=await self.client.post('/api/export-jobs',json={'export_type':'billing_sensitive','purpose':'测试'},headers={'Idempotency-Key':secrets.token_hex(16)})
+        self.assertEqual(response.status_code,422)
+        sensitive=await self.export_job(export_type='billing_sensitive',filters=None,columns=[],purpose='完整资料验收',confirm_sensitive=True)
+        self.assertEqual(exports.claim(),sensitive['id']);await asyncio.to_thread(exports.generate,sensitive['id'])
+        self.assertEqual((await self.client.get('/api/export-jobs/'+sensitive['id'])).json()['status'],'succeeded')
+
+    async def test_restore_hold_blocks_numbering_until_complete_external_reconciliation(self):
+        import json
+        await self.login()
+        with SessionLocal() as db:
+            db.merge(models.AppSetting(key='restore_hold',value='{"required":true}'));db.commit()
+        try:
+            denied=await self.client.put('/api/projects/1',json={'expected_revision':1,'customer_name':'禁止写入'})
+            self.assertEqual(denied.status_code,409)
+            state=(await self.client.get('/api/system/backup/reconciliation')).json();self.assertTrue(state['required'])
+            payload={'rules':[{'id':r['id'],'actual_last_sequence':r['current_sequence']+100} for r in state['rules']], 'confirmed_external_records':False,'reason':'已向外部档案核对已交付最大序号'}
+            self.assertEqual((await self.client.post('/api/system/backup/reconcile',json=payload)).status_code,422)
+            payload['confirmed_external_records']=True
+            self.assertEqual((await self.client.post('/api/system/backup/reconcile',json=payload)).status_code,200)
+            self.assertFalse((await self.client.get('/api/system/backup/reconciliation')).json()['required'])
+        finally:
+            with SessionLocal() as db:db.query(models.AppSetting).filter_by(key='restore_hold').delete();db.commit()
+
+    async def test_export_readonly_download_slot_and_disk_failure(self):
+        import exports
+        from unittest.mock import patch
+        from collections import namedtuple
+        await self.login()
+        with patch.object(main,'license_required',return_value=True),patch.object(main,'license_status',return_value={'allowed':False,'reason':'只读'}):
+            job=await self.export_job();self.assertEqual(exports.claim(),job['id']);await asyncio.to_thread(exports.generate,job['id'])
+            exports.download_slot.acquire()
+            try:
+                response=await self.client.get('/api/export-jobs/'+job['id']+'/download')
+                self.assertEqual(response.status_code,429);self.assertEqual(response.headers['Retry-After'],'5')
+            finally:exports.download_slot.release()
+            self.assertEqual((await self.client.get('/api/export-jobs/'+job['id']+'/download')).status_code,200)
+            # A completed response releases its slot for the next authenticated retry.
+            self.assertEqual((await self.client.get('/api/export-jobs/'+job['id']+'/download')).status_code,200)
+        job=await self.export_job();exports.claim()
+        usage=namedtuple('Usage','total used free')
+        with patch.object(exports.shutil,'disk_usage',return_value=usage(100,100,0)):await asyncio.to_thread(exports.generate,job['id'])
+        state=(await self.client.get('/api/export-jobs/'+job['id'])).json();self.assertEqual(state['error_code'],'disk_space_low')
+        self.assertFalse((exports.DIRECTORY/(job['id']+'.partial.xlsx')).exists())
+
+    async def test_ten_export_users_fifo_single_generation_and_global_limit(self):
+        import exports,secrets
+        from unittest.mock import patch
+        await self.login()
+        prefix='queue-'+secrets.token_hex(4)
+        with SessionLocal() as db:
+            hashed=get_password_hash('Test-password-2026')
+            users=[models.User(username=prefix+str(i),real_name='队列用户',fiscal_year=2026,hashed_password=hashed,
+                role_records=[models.UserRoleRecord(role_code='number_manager')]) for i in range(10)]
+            db.add_all(users);db.commit()
+        async def submit(i):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),base_url='http://testserver') as client:
+                await client.post('/api/auth/login',json={'username':prefix+str(i),'password':'Test-password-2026'})
+                response=await client.post('/api/export-jobs',json={'filters':{'fiscal_year':2026},'columns':['project_id']},
+                    headers={'X-CSRF-Token':client.cookies['firm_csrf'],'Idempotency-Key':secrets.token_hex(16)})
+                self.assertEqual(response.status_code,202,response.text);return response.json()['id']
+        jobs=await asyncio.gather(*(submit(i) for i in range(10)))
+        with SessionLocal() as db:
+            expected=db.query(models.ExportJob).filter(models.ExportJob.id.in_(jobs)).order_by(models.ExportJob.created_at,models.ExportJob.id).first().id
+        self.assertEqual(exports.claim(),expected);self.assertIsNone(exports.claim())
+        with SessionLocal() as db:
+            self.assertEqual(db.query(models.ExportJob).filter(models.ExportJob.id.in_(jobs),models.ExportJob.status=='queued').count(),9)
+        with patch.object(exports,'MAX_PENDING',10):
+            response=await self.client.post('/api/export-jobs',json={'filters':{'fiscal_year':2026},'columns':['project_id']},headers={'Idempotency-Key':secrets.token_hex(16)})
+            self.assertEqual(response.status_code,429)
+        for job in jobs:self.assertEqual((await self.client.post('/api/export-jobs/'+job+'/cancel')).status_code,200)
+        await asyncio.to_thread(exports.generate,expected)
+
+    async def test_role_matrix_project_scope_money_edit_and_numbering(self):
+        import secrets
+        for account,readable,money,editable,issuable in [
+            ('admin',True,True,True,True),('number',True,False,True,True),
+            ('finance',True,True,False,False),('leader',True,True,True,True),
+            ('outsider',True,False,False,False),('combined',True,False,True,True),
+            ('clerk',False,False,False,False)]:
+            with self.subTest(account=account):
+                await self.login();project=await self.new_project(member_ids=[self.outsider_id],contract_amount=99)
+                await self.login(account);url='/api/projects/'+str(project['id'])
+                detail=await self.client.get(url);self.assertEqual(detail.status_code,200 if readable else 403)
+                listing=(await self.client.get('/api/projects',params={'fiscal_year':2026,'search':project['project_id']})).json()
+                self.assertEqual(any(p['id']==project['id'] for p in listing['items']),readable)
+                if readable:self.assertEqual(detail.json()['contract_amount'],99 if money else None)
+                edit=await self.client.patch(url,json={'expected_revision':1,'priority':'高'})
+                self.assertEqual(edit.status_code,200 if editable else 403,edit.text)
+                revision=2 if editable else 1
+                issue=await self.client.post(url+'/generate-report-no',json={'expected_revision':revision},headers={'Idempotency-Key':secrets.token_hex(16)})
+                self.assertEqual(issue.status_code,200 if issuable else 403,issue.text)
+
     def test_foreign_keys_and_full_durability(self):
         with engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("PRAGMA foreign_keys").scalar(), 1)
             self.assertEqual(connection.exec_driver_sql("PRAGMA synchronous").scalar(), 2)
+
+    async def test_mounted_static_gzip_hash_cache_and_html_revalidation(self):
+        from fastapi import FastAPI
+        from fastapi.staticfiles import StaticFiles
+        from fastapi.responses import HTMLResponse
+        from static_delivery import StaticDelivery
+        with tempfile.TemporaryDirectory() as temporary:
+            Path(temporary,'index-AbCd1234.js').write_text('const value="'+'x'*1000+'";')
+            application=FastAPI();application.add_middleware(StaticDelivery)
+            application.mount('/assets',StaticFiles(directory=temporary))
+            @application.get('/')
+            def index():return HTMLResponse('<html>'+('x'*1000)+'</html>')
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application),base_url='http://testserver') as client:
+                asset=await client.get('/assets/index-AbCd1234.js')
+                self.assertEqual(asset.headers['Content-Encoding'],'gzip')
+                self.assertEqual(asset.headers['Cache-Control'],'public, max-age=31536000, immutable')
+                self.assertEqual((await client.get('/')).headers['Cache-Control'],'no-cache')
 
     def test_unknown_schema_is_preserved(self):
         path = Path(TEST_DIR.name) / "unknown.sqlite"

@@ -164,7 +164,7 @@ export const dashboardApi = {
 
 // Excel 导出
 export const exportApi = {
-  exportProjects: (fiscal_year?: number) => api.get('/export/projects', { params: { fiscal_year }, responseType: 'blob' }),
+  submit: (data: Record<string, unknown>, key = requestKey()) => api.post('/export-jobs',data,{headers:{'Idempotency-Key':key}}),
 }
 
 // 签字人 API
@@ -201,7 +201,7 @@ export const signerApi = {
   },
 
   // 导出签字人
-  export: () => api.get('/signers/export', { responseType: 'blob' }),
+  export: () => exportApi.submit({export_type:'signers'}),
 
   // 下载导入模板
   downloadTemplate: () => api.get('/signers/template', { responseType: 'blob' }),

@@ -56,7 +56,15 @@ with SessionLocal() as startup_db:
         license_manager.identity()
 
 app = FastAPI(title="业码汇 - 事务所业务编号管理", version=APP_VERSION)
+from static_delivery import StaticDelivery
+app.add_middleware(StaticDelivery)
 _license_heartbeat_task = None
+_export_supervisor_task = None
+from exports import router as export_router
+from project_queries import filter_projects
+app.include_router(export_router)
+from backups import router as backup_router
+app.include_router(backup_router)
 _license_heartbeat_lock = asyncio.Lock()
 
 
@@ -87,13 +95,20 @@ async def _license_heartbeat_loop():
 
 @app.on_event("startup")
 def start_license_heartbeat():
-    global _license_heartbeat_task
+    global _license_heartbeat_task, _export_supervisor_task
+    from export_supervisor import supervise
     _license_heartbeat_task = asyncio.create_task(_license_heartbeat_loop())
+    _export_supervisor_task = asyncio.create_task(supervise())
 
 
 @app.on_event("shutdown")
 async def stop_license_heartbeat():
-    global _license_heartbeat_task
+    global _license_heartbeat_task, _export_supervisor_task
+    if _export_supervisor_task:
+        _export_supervisor_task.cancel()
+        try:await _export_supervisor_task
+        except asyncio.CancelledError:pass
+        _export_supervisor_task = None
     if _license_heartbeat_task:
         _license_heartbeat_task.cancel()
         try:
@@ -106,6 +121,13 @@ async def stop_license_heartbeat():
 @app.middleware("http")
 async def enforce_license(request: Request, call_next):
     """按唯一可信状态源执行业务写入与功能许可检查。"""
+    if request.method not in {'GET','HEAD','OPTIONS'} and request.url.path.startswith('/api/') and not request.url.path.startswith(('/api/auth/','/api/license/','/api/system/backup','/api/export-jobs')):
+        def restored_hold():
+            with SessionLocal() as db:
+                row=db.get(models.AppSetting,'restore_hold')
+                return bool(row and json.loads(row.value).get('required'))
+        if await asyncio.to_thread(restored_hold):
+            return JSONResponse(status_code=409,content={'detail':{'code':'restore_reconciliation_required','message':'恢复后须先核对已交付最大编号','request_id':getattr(request.state,'request_id','')}})
     if license_required() and request.url.path.startswith("/api/") and request.url.path not in {
         "/api/license/status",
         "/api/license/activate",
@@ -118,7 +140,7 @@ async def enforce_license(request: Request, call_next):
         "/api/auth/otp/login",
     }:
         current = license_status()
-        security_action = request.url.path.startswith("/api/auth/") or request.url.path.startswith('/api/system/backup') or (request.method in ('PUT','DELETE') and re.fullmatch(r'/api/users/[0-9]+', request.url.path))
+        security_action = request.url.path.startswith("/api/auth/") or request.url.path.startswith('/api/system/backup') or request.url.path.startswith('/api/export-jobs') or (request.method in ('PUT','DELETE') and re.fullmatch(r'/api/users/[0-9]+', request.url.path))
         if not current.get("allowed") and request.method not in {"GET", "HEAD", "OPTIONS"} and not security_action:
             return JSONResponse(status_code=402, content={"detail": current.get("reason", "授权不可用"), "license_required": True})
         # Enforce module-level entitlements at the API boundary so direct API
@@ -208,6 +230,9 @@ def get_license_status(request: Request, db: Session = Depends(get_db)):
         "license_type": document.get("license_type"),
         "customer_name": document.get("customer_name"),
         "max_users": document.get("max_users"),
+        "device_key_id": document.get('device_key_id'),
+        "lease_sequence": document.get('lease_sequence'),
+        "license_revision": document.get('license_revision'),
         "active_users": active_practitioners,
         "max_projects": document.get("max_projects"),
         "active_projects": active_projects,
@@ -1150,11 +1175,19 @@ def import_signers(
         raise HTTPException(status_code=400, detail="只支持 xlsx 格式")
 
     try:
+        import zipfile
+        file.file.seek(0)
+        with zipfile.ZipFile(file.file) as archive:
+            if len(archive.infolist())>1000 or sum(item.file_size for item in archive.infolist())>20*1024*1024:
+                raise ValueError('Excel解压后超过上限')
+        file.file.seek(0)
         wb = load_workbook(file.file, read_only=True, data_only=True)
     except Exception:
         raise HTTPException(status_code=400, detail="Excel 文件无法读取，请检查文件格式")
 
     ws = wb.active
+    if ws.max_row and ws.max_row>5001:
+        wb.close();raise HTTPException(422,'签字人导入最多5000行')
 
     imported = 0
     skipped = 0
@@ -1162,6 +1195,8 @@ def import_signers(
     seen = set()
 
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        if row_idx>5001:
+            wb.close();raise HTTPException(422,'签字人导入最多5000行')
         if not row or not row[0]:
             continue
         username = str(row[0]).strip()
@@ -1207,57 +1242,6 @@ def import_signers(
         "message": f"导入完成：新增 {imported} 条，跳过 {skipped} 条",
         "errors": errors[:10]  # 最多返回10条错误
     }
-
-
-@app.get("/api/signers/export")
-def export_signers(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    """导出签字人（Excel格式）"""
-    if not has(current_user, "signer.manage"):
-        raise HTTPException(status_code=403, detail="无权限管理签字人")
-
-    signers = db.query(models.Signer).order_by(
-        models.Signer.signer_type, models.Signer.name
-    ).all()
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "签字人"
-
-    # 表头
-    headers = ["姓名", "执业账号", "事务所", "状态", "新增日期", "禁用日期"]
-    append_export_row(ws, headers)
-
-    # 数据
-    for s in signers:
-        append_export_row(ws, [
-            s.name,
-            s.user.username if s.user else "未关联",
-            s.signer_type,
-            "启用" if s.is_active else "禁用",
-            s.created_at.strftime("%Y-%m-%d") if s.created_at else "",
-            s.disabled_at.strftime("%Y-%m-%d") if s.disabled_at else ""
-        ])
-
-    # 调整列宽
-    ws.column_dimensions['A'].width = 15
-    ws.column_dimensions['B'].width = 18
-    ws.column_dimensions['C'].width = 20
-    ws.column_dimensions['D'].width = 8
-    ws.column_dimensions['E'].width = 12
-    ws.column_dimensions['F'].width = 12
-
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
-
-    return StreamingResponse(
-        output,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=signers.xlsx"}
-    )
 
 
 @app.get("/api/signers/template")
@@ -1324,15 +1308,10 @@ def download_signer_template(
 def generate_unique_project_no(db: Session, fiscal_year: int) -> str:
     """Called under the SQLite write lock held by create_project."""
     prefix = f"PRJ-{fiscal_year}-"
-    project_ids = db.query(models.Project.project_id).filter(
-        models.Project.project_id.like(f"{prefix}%")
-    ).all()
-    last_seq = max((
-        int(project_id[0][len(prefix):])
-        for project_id in project_ids
-        if project_id[0][len(prefix):].isdigit()
-    ), default=0)
-    return f"{prefix}{last_seq + 1:04d}"
+    if not db.get(models.ProjectSequence,fiscal_year):
+        db.execute(text('INSERT INTO project_sequences(fiscal_year,last_sequence) SELECT :year,COALESCE(MAX(CAST(SUBSTR(project_id,:start) AS INTEGER)),0) FROM projects WHERE fiscal_year=:year ON CONFLICT(fiscal_year) DO NOTHING'),{'year':fiscal_year,'start':len(prefix)+1})
+    sequence=db.execute(text('UPDATE project_sequences SET last_sequence=last_sequence+1 WHERE fiscal_year=:year RETURNING last_sequence'),{'year':fiscal_year}).scalar_one()
+    return f"{prefix}{sequence:04d}"
 
 
 def resolve_project(db: Session, project_id: str):
@@ -1387,30 +1366,9 @@ def list_projects(
     if year is not None:
         raise HTTPException(status_code=400, detail="year 参数已移除，请改用 report_year（业务年度）")
 
-    query = project_scope(db.query(models.Project).filter(models.Project.is_deleted == False), current_user)
-    query = query.filter(models.Project.fiscal_year == explicit_year(db, fiscal_year))
-    if customer_id is not None:
-        query = query.filter(models.Project.customer_id == customer_id)
-
-    # 筛选条件
-    if search:
-        query = query.filter(
-            (models.Project.customer_name.contains(search)) |
-            (models.Project.customer_tax_id.contains(search)) |
-            (models.Project.project_id.contains(search)) |
-            (models.Project.report_no.contains(search))
-        )
-    if firm:
-        query = query.filter(models.Project.firm == firm)
-    if report_type:
-        query = query.filter(models.Project.report_type == report_type)
-    if project_status:
-        query = query.filter(models.Project.project_status == project_status)
-    if leader_id:
-        query = query.filter(models.Project.leader_id == leader_id)
-    if report_year is not None:
-        # 显式传入业务年度时，仅筛选审计对象所属年度。
-        query = query.filter(models.Project.report_year == report_year)
+    query = filter_projects(project_scope(db.query(models.Project), current_user),
+        dict(fiscal_year=explicit_year(db,fiscal_year),search=search,firm=firm,report_type=report_type,
+             project_status=project_status,leader_id=leader_id,report_year=report_year,customer_id=customer_id))
 
     total = query.count()
     sortable = {
@@ -1851,46 +1809,23 @@ def get_dashboard(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    from calendar import monthrange
-
-    query = project_scope(db.query(models.Project).filter(models.Project.is_deleted == False), current_user)
-    query = query.filter(models.Project.fiscal_year == explicit_year(db, fiscal_year))
-    projects = query.all()
-
-    # 统计
-    total = len(projects)
-    ongoing = len([p for p in projects if p.project_status == "进行中"])
-    completed = len([p for p in projects if p.project_status == "已完成"])
-    paused = len([p for p in projects if p.project_status == "已暂停"])
-    cancelled = len([p for p in projects if p.project_status == "已取消"])
-
-    # 本月新增
-    now = datetime.now()
-    first_day = datetime(now.year, now.month, 1)
-    this_month_new = len([p for p in projects if p.created_at >= first_day])
-
-    # 金额统计
-    money_projects = [p for p in projects if can_read_money(current_user, p)]
-    totals_visible = has(current_user, "finance.read.all") or has(current_user, "finance.summary.led")
-    total_contract = sum(p.contract_amount or 0 for p in money_projects) if totals_visible else None
-    total_invoiced = sum(p.invoiced_amount or 0 for p in money_projects) if totals_visible else None
-    total_received = sum(p.received_amount or 0 for p in money_projects) if totals_visible else None
-    total_uninvoiced = sum(p.uninvoiced_amount or 0 for p in money_projects) if totals_visible else None
-    total_unreceived = sum(p.unreceived_amount or 0 for p in money_projects) if totals_visible else None
-
-    return schemas.DashboardStats(
-        total_projects=total,
-        ongoing_projects=ongoing,
-        completed_projects=completed,
-        paused_projects=paused,
-        cancelled_projects=cancelled,
-        this_month_new=this_month_new,
-        total_contract_amount=total_contract,
-        total_invoiced_amount=total_invoiced,
-        total_received_amount=total_received,
-        total_uninvoiced=total_uninvoiced,
-        total_unreceived=total_unreceived
-    )
+    from sqlalchemy import func, case
+    p=models.Project
+    query=project_scope(db.query(p).filter(p.is_deleted==False,p.fiscal_year==explicit_year(db,fiscal_year)),current_user)
+    first_day=datetime.now().replace(day=1,hour=0,minute=0,second=0,microsecond=0)
+    counts=query.with_entities(func.count(p.id),
+        *[func.coalesce(func.sum(case((p.project_status==state,1),else_=0)),0) for state in ('进行中','已完成','已暂停','已取消')],
+        func.coalesce(func.sum(case((p.created_at>=first_day,1),else_=0)),0)).one()
+    amounts=[None]*5
+    if has(current_user,'finance.read.all') or has(current_user,'finance.summary.led'):
+        money=query if has(current_user,'finance.read.all') else query.filter(p.leader_id==current_user.id)
+        contract,invoiced,received=money.with_entities(*[func.coalesce(func.sum(column),0) for column in
+            (p.contract_amount_cents,p.invoiced_amount_cents,p.received_amount_cents)]).one()
+        uninvoiced=money.with_entities(func.coalesce(func.sum(p.contract_amount_cents-p.invoiced_amount_cents),0)).scalar()
+        amounts=[contract/100,invoiced/100,received/100,uninvoiced/100,(invoiced-received)/100]
+    return schemas.DashboardStats(**dict(zip(('total_projects','ongoing_projects','completed_projects','paused_projects',
+        'cancelled_projects','this_month_new'),counts)),**dict(zip(('total_contract_amount','total_invoiced_amount',
+        'total_received_amount','total_uninvoiced','total_unreceived'),amounts)))
 
 
 @app.get("/api/public/numbered-years")
@@ -2326,72 +2261,6 @@ def delete_fiscal_year_report_type(
 
 
 # ==================== Excel 导出 ====================
-@app.get("/api/export/projects")
-def export_projects(
-    fiscal_year: Optional[int] = None,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if not can_export(current_user):
-        raise HTTPException(status_code=403, detail="无权限导出")
-
-    query = project_scope(db.query(models.Project).filter(models.Project.is_deleted == False), current_user, exporting=True)
-    query = query.filter(models.Project.fiscal_year == explicit_year(db, fiscal_year))
-
-    projects = query.all()
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "项目列表"
-
-    # 表头
-    headers = [
-        "项目ID", "事务所", "报告类型", "报告年度", "报告编号", "编号状态",
-        "客户名称", "合同号", "下单时间", "执业负责人", "团队成员",
-        "项目状态", "项目阶段", "优先级", "项目规模", "业务来源",
-        "合同金额", "开票金额", "开票时间", "收款金额", "收款时间",
-        "未开票金额", "未收款金额", "签字人一", "签字人一账号",
-        "签字人二", "签字人二账号", "创建时间"
-    ]
-    append_export_row(ws, headers)
-
-    # 数据
-    for p in projects:
-        try:
-            members = ", ".join([m.user.real_name for m in p.members if m.user])
-            append_export_row(ws, [
-                p.project_id, p.firm, p.report_type, p.report_year, p.report_no or "",
-                p.report_no_status, p.customer_name, p.contract_no or "",
-                p.order_date.strftime("%Y-%m-%d") if p.order_date else "",
-                p.leader.real_name if p.leader else "", members,
-                p.project_status, p.project_phase, p.priority, p.scale or "", p.business_source or "",
-                p.contract_amount if can_read_money(current_user, p) else None, p.invoiced_amount if can_read_money(current_user, p) else None,
-                p.invoice_date.strftime("%Y-%m-%d") if p.invoice_date and can_read_money(current_user, p) else "",
-                p.received_amount if can_read_money(current_user, p) else None,
-                p.receive_date.strftime("%Y-%m-%d") if p.receive_date and can_read_money(current_user, p) else "",
-                p.uninvoiced_amount if can_read_money(current_user, p) else None, p.unreceived_amount if can_read_money(current_user, p) else None,
-                p.signer1.name if p.signer1 else "",
-                p.signer1.user.username if p.signer1 and p.signer1.user else "",
-                p.signer2.name if p.signer2 else "",
-                p.signer2.user.username if p.signer2 and p.signer2.user else "",
-                p.created_at.strftime("%Y-%m-%d %H:%M")
-            ])
-        except Exception as e:
-            # 跳过有问题的项目，记录错误
-            append_export_row(ws, [p.project_id, f"导出错误: {str(e)}"])
-
-    # 保存到BytesIO
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
-
-    return StreamingResponse(
-        output,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=projects_{datetime.now().strftime('%Y%m%d')}.xlsx"}
-    )
-
-
 # ==================== 前端静态文件服务 ====================
 # 构建产物可缺席；开发模式下 API 与 Vite 分别运行。
 STATIC_DIR = Path(os.getenv("FIRM_MANAGER_STATIC_DIR", Path(__file__).resolve().parent / "static"))

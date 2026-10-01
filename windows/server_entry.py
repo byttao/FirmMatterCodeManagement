@@ -18,6 +18,16 @@ def main() -> None:
     os.environ["FIRM_MANAGER_DATA_DIR"] = str(data_dir)
     os.environ["FIRM_MANAGER_VERSION_FILE"] = str(root / "VERSION")
     os.environ.pop("FIRM_MANAGER_DATABASE_URL", None)
+    if len(sys.argv)==4 and sys.argv[1]=='--restore-backup':
+        if not getattr(sys,'frozen',False):sys.path.insert(0,str(root/'backend'))
+        from backups import restore_cli
+        restore_cli(sys.argv[2],sys.argv[3])
+        return
+    if '--export-worker' in sys.argv:
+        if not getattr(sys,'frozen',False):sys.path.insert(0,str(root/'backend'))
+        from export_worker import main as run_worker
+        run_worker()
+        return
     public_key_file = root / "license-public-key.txt"
     if not public_key_file.is_file():
         raise RuntimeError('缺少预置发行公钥，请下载完整安装包')

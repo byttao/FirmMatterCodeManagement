@@ -3,7 +3,7 @@ from sqlalchemy import inspect, text
 from database import Base
 import models  # register tables
 
-SCHEMA_VERSION = 400
+SCHEMA_VERSION = 600
 
 
 def initialize_schema(engine):
@@ -19,6 +19,21 @@ def initialize_schema(engine):
         Base.metadata.create_all(connection)
         connection.execute(text("CREATE TABLE schema_version (version INTEGER NOT NULL)"))
         connection.execute(text("INSERT INTO schema_version VALUES (:version)"), {"version": SCHEMA_VERSION})
+        connection.execute(text('INSERT INTO export_access_epoch(id,value) VALUES(1,1)'))
+        # Conservatively invalidate generated files when identity or object scope changes.
+        for table, actions in {
+            'users':['UPDATE OF is_active,permission_revision,session_version'],
+            'user_roles':['INSERT','UPDATE','DELETE'],
+            'user_special_grants':['INSERT','UPDATE','DELETE'],
+            'project_members':['INSERT','UPDATE','DELETE'],
+            'projects':['UPDATE OF leader_id,signer1_id,signer2_id,customer_id,is_deleted'],
+            'signers':['UPDATE OF user_id,is_active','DELETE'],
+            'customers':['UPDATE OF merged_into_id'],
+            'customer_billing_profiles':['UPDATE OF is_active']
+        }.items():
+            for index, action in enumerate(actions):
+                connection.execute(text(f'CREATE TRIGGER export_epoch_{table}_{index} AFTER {action} ON {table} BEGIN UPDATE export_access_epoch SET value=value+1 WHERE id=1; END'))
+        connection.execute(text('CREATE INDEX idx_project_dashboard ON projects(fiscal_year,is_deleted,project_status)'))
         connection.execute(text("CREATE UNIQUE INDEX uq_member ON project_members(project_id,user_id)"))
         connection.execute(text("CREATE UNIQUE INDEX uq_signer ON signers(user_id,signer_type)"))
         connection.execute(text("CREATE UNIQUE INDEX uq_billing_default ON customer_billing_profiles(customer_id) WHERE is_active=1 AND is_default=1"))

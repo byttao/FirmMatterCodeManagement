@@ -27,93 +27,6 @@ def installation_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def wait_for_process(pid: int) -> None:
-    if os.name != "nt":
-        return
-    kernel32 = ctypes.windll.kernel32
-    handle = kernel32.OpenProcess(0x00100000, False, pid)
-    if handle:
-        try:
-            if kernel32.WaitForSingleObject(handle, 120000) == 0x102:
-                raise RuntimeError("管理工具未能在两分钟内退出，升级已取消")
-        finally:
-            kernel32.CloseHandle(handle)
-
-
-def wait_for_health(config: dict, version: str, seconds: int = 60) -> bool:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if core.health(config, timeout=2, expected_version=version) is not None:
-            return True
-        time.sleep(1)
-    return False
-
-
-def record_result(root: Path, success: bool, message: str, backup: Path | None = None) -> None:
-    destination = root / "data" / "updates" / "last-result.json"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps({
-        "success": success, "message": message, "backup": str(backup) if backup else "",
-    }, ensure_ascii=False), encoding="utf-8")
-
-
-def apply_update(root: Path, archive_path: Path, version: str, parent_pid: int) -> int:
-    backup = None
-    replaced = []
-    service_was_running = False
-    recovery_failed = False
-    try:
-        wait_for_process(parent_pid)
-        core.validate_package(archive_path, version)
-        config = core.load_config(root)
-        service_was_running = core.service_state(root) == "running"
-        core.stop_service(root)
-        if core.service_state(root) == "running":
-            raise RuntimeError("服务未能停止，已取消升级")
-        backup = core.backup_database(root)
-        with tempfile.TemporaryDirectory(prefix="firm-manager-originals-") as temp_dir:
-            replaced = core.install_package(root, archive_path, version, Path(temp_dir))
-            try:
-                core.start_service(root)
-                if not wait_for_health(config, version):
-                    raise RuntimeError("新版本服务未能正常启动")
-                if not service_was_running:
-                    core.stop_service(root)
-            except Exception as exc:
-                recovery_errors = []
-                for recover in (
-                    lambda: core.stop_service(root),
-                    lambda: core.rollback_files(replaced),
-                    lambda: core.restore_database(root, backup) if backup else None,
-                ):
-                    try:
-                        recover()
-                    except Exception as recovery_error:
-                        recovery_errors.append(str(recovery_error))
-                if recovery_errors:
-                    recovery_failed = True
-                    raise RuntimeError(f"{exc}；程序或数据恢复失败：{'；'.join(recovery_errors)}") from exc
-                if service_was_running:
-                    core.start_service(root)
-                    if not wait_for_health(config, core.read_version(root)):
-                        raise RuntimeError(f"{exc}；原版本服务未能恢复") from exc
-                raise
-        record_result(root, True, f"已升级至 v{version}", backup)
-        return 0
-    except Exception as exc:
-        if service_was_running and not recovery_failed and core.service_state(root) == "stopped":
-            try:
-                core.start_service(root)
-            except Exception:
-                pass
-        record_result(root, False, str(exc), backup)
-        return 1
-    finally:
-        manager = root / "Manager.exe"
-        if manager.is_file():
-            subprocess.Popen([str(manager)], cwd=root)
-
-
 class Manager(tk.Tk):
     def __init__(self, root: Path):
         super().__init__()
@@ -187,7 +100,7 @@ class Manager(tk.Tk):
         update_actions.grid(row=13, column=0, columnspan=3, sticky="w")
         self.check_button = ttk.Button(update_actions, text="检查更新", command=self._check_update)
         self.check_button.pack(side="left")
-        self.update_button = ttk.Button(update_actions, text="安装新版", command=self._install_update, state="disabled")
+        self.update_button = ttk.Button(update_actions, text="下载完整新版", command=self._install_update, state="disabled")
         self.update_button.pack(side="left", padx=8)
         ttk.Button(update_actions, text="打开发布页面", command=lambda: webbrowser.open("https://github.com/byttao/FirmMatterCodeManagement/releases")).pack(side="left")
 
@@ -335,7 +248,7 @@ class Manager(tk.Tk):
             self.check_button.configure(state="normal")
             self.pending_release = release
             if release:
-                self.update_status.set(f"可升级至 v{release['version']}")
+                self.update_status.set(f"可下载完整新安装包 v{release['version']}")
                 self.update_button.configure(state="normal")
             else:
                 self.update_status.set(f"当前版本 v{self.version}，已是最新版本")
@@ -345,61 +258,12 @@ class Manager(tk.Tk):
 
     def _install_update(self) -> None:
         release = self.pending_release
-        if not release or not getattr(sys, "frozen", False):
-            messagebox.showerror("无法升级", "请使用 Release 中的 Windows 管理工具执行升级。", parent=self)
-            return
-        if not messagebox.askyesno("安装新版", f"升级至 v{release['version']}？服务会短暂停止，数据库会先备份。", parent=self):
-            return
-        self._begin_upgrade(release["version"], release=release)
+        if not release:return
+        messagebox.showinfo('完整新安装包','本轮不提供旧数据库升级。请保留原数据和密钥备份，在新目录安装；同版本灾难恢复使用加密备份流程。',parent=self)
+        webbrowser.open(f"https://github.com/byttao/FirmMatterCodeManagement/releases/tag/v{release['version']}")
 
     def _install_local_update(self) -> None:
-        path = filedialog.askopenfilename(parent=self, title="选择 Windows Release 安装包", filetypes=[("ZIP 安装包", "*.zip")])
-        if not path:
-            return
-        try:
-            version = core.package_version(Path(path))
-            core.validate_package(Path(path), version)
-            if core.version_key(version) <= core.version_key(self.version):
-                raise ValueError("所选安装包不是更新版本，已取消升级")
-        except (OSError, ValueError, RuntimeError) as exc:
-            messagebox.showerror("安装包无效", str(exc), parent=self)
-            return
-        if messagebox.askyesno("本地升级", f"使用所选安装包升级至 v{version}？服务会短暂停止，数据库会先备份。", parent=self):
-            self._begin_upgrade(version, local_archive=Path(path))
-
-    def _begin_upgrade(self, version: str, release: dict | None = None, local_archive: Path | None = None) -> None:
-        messagebox.showinfo("新目录安装", "本版本不支持旧数据库原地升级。请下载完整安装包，在新目录初始化，并保留原数据备份。")
-        return
-        if not getattr(sys, "frozen", False):
-            messagebox.showerror("无法升级", "请使用 Release 中的 Windows 管理工具执行升级。", parent=self)
-            return
-        self.update_button.configure(state="disabled")
-        self.message.set("正在准备升级包...")
-
-        def task():
-            staging = Path(tempfile.mkdtemp(prefix="FirmMatterCodeManagement-upgrade-"))
-            archive = staging / core.WINDOWS_ASSET
-            if release:
-                core.download_package(release, archive)
-            elif local_archive:
-                shutil.copy2(local_archive, archive)
-                core.validate_package(archive, version)
-            helper = staging / "Manager-Update.exe"
-            shutil.copy2(sys.executable, helper)
-            shutil.copytree(self.root_dir / "Manager-internal", staging / "Manager-internal")
-            return helper, archive
-
-        def done(paths):
-            helper, archive = paths
-            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            subprocess.Popen([
-                str(helper), "--apply-update", str(self.root_dir), str(archive),
-                version, str(os.getpid()),
-            ], cwd=self.root_dir, creationflags=flags)
-            self.destroy()
-
-        self._run_background(task, done)
-
+        messagebox.showinfo('新目录安装','请手工解压完整ZIP至新目录。本轮不支持原地升级，也不会替换现有数据。',parent=self)
     def _show_last_result(self) -> None:
         path = self.root_dir / "data" / "updates" / "last-result.json"
         if not path.is_file():
@@ -417,7 +281,7 @@ def main() -> int:
         print(core.read_version(root), core.validate_config(**core.DEFAULT_CONFIG))
         return 0
     if len(sys.argv) == 6 and sys.argv[1] == "--apply-update":
-        return apply_update(Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], int(sys.argv[5]))
+        raise RuntimeError("本轮不支持原地升级，请在新目录安装完整ZIP")
     if os.name != "nt":
         raise RuntimeError("服务器管理工具仅支持 Windows")
     root = installation_root()

@@ -486,3 +486,41 @@ class AppSetting(Base):
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False, default="{}")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ExportAccessEpoch(Base):
+    __tablename__ = 'export_access_epoch'
+    id = Column(Integer, primary_key=True)
+    value = Column(Integer, nullable=False, default=1)
+
+
+class ProjectSequence(Base):
+    __tablename__='project_sequences'
+    fiscal_year=Column(Integer,primary_key=True)
+    last_sequence=Column(Integer,nullable=False,default=0)
+
+
+class ExportJob(Base):
+    __tablename__ = 'export_jobs'
+    id = Column(String(32), primary_key=True)
+    requested_by = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    export_type = Column(String(32), nullable=False)
+    filters_json = Column(Text, nullable=False)
+    field_set = Column(Text, nullable=False)
+    purpose = Column(String(500))
+    permission_revision = Column(Integer, nullable=False)
+    access_epoch = Column(Integer, nullable=False)
+    idempotency_key = Column(String(100), nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    status = Column(String(16), nullable=False, default='queued', index=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    expires_at = Column(DateTime)
+    row_count = Column(Integer, nullable=False, default=0)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    file_id = Column(String(32))
+    file_size = Column(Integer)
+    error_code = Column(String(64))
+    request_id = Column(String(64))
+    __table_args__ = (Index('uq_export_retry','requested_by','idempotency_key',unique=True),)

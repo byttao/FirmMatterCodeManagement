@@ -7,6 +7,9 @@ import { Label } from '@/components/ui/label'
 import { RefreshCw } from 'lucide-react'
 
 type LicenseState = {
+  device_key_id?: string
+  lease_sequence?: number
+  license_revision?: number
   mode: string
   allowed: boolean
   reason: string
@@ -141,6 +144,8 @@ export default function LicenseManagement() {
           {license.license_id && <div><span className="text-muted-foreground">授权编号：</span>{license.license_id}</div>}
           <div><span className="text-muted-foreground">合同截止：</span>{license.expires_at?new Date(license.expires_at).toLocaleString():'永久使用权 / 未签约'}</div>
           {license.lease_until&&<div><span className="text-muted-foreground">离线租约截止：</span>{new Date(license.lease_until).toLocaleString()}</div>}
+          {license.device_key_id && <div className="break-all"><span className="text-muted-foreground">设备公钥标识：</span>{license.device_key_id}</div>}
+          {license.lease_sequence != null && <div><span className="text-muted-foreground">可信租约序列 / 授权修订：</span>{license.lease_sequence} / {license.license_revision}</div>}
           <div><span className="text-muted-foreground">执业人员：</span>已有 {license.active_users ?? 0} 人，授权上限 {quotaLabel(license.max_users)} 人</div>
           <div><span className="text-muted-foreground">项目数量：</span>已有 {license.active_projects ?? 0} 个，授权上限 {quotaLabel(license.max_projects)} 个</div>
           <div><span className="text-muted-foreground">最近核验结果：</span><strong className={license.server_connected ? 'text-green-700' : 'text-red-600'}>{license.server_connected ? '成功' : '尚未成功'}</strong>{license.server_connection_reason && <span className="ml-2 text-muted-foreground">{license.server_connection_reason}</span>}</div>

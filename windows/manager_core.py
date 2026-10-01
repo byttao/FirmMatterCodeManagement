@@ -178,6 +178,8 @@ def wait_for_service(root: Path, expected: str, seconds: int = 45) -> None:
 
 def start_service(root: Path) -> None:
     (root / "data" / "logs").mkdir(parents=True, exist_ok=True)
+    if os.name=='nt':
+        _run(['icacls',str(root/'data'),'/inheritance:r','/grant:r','*S-1-5-32-544:(OI)(CI)F','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)M'],root)
     state = service_state(root)
     if state == "missing":
         service_command(root, "install")

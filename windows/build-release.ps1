@@ -66,6 +66,8 @@ try {
     if (Test-Path $serverStderr) { Get-Content $serverStderr -Tail 80 }
     throw "BackendServer.exe 启动或前端静态文件检查失败"
   }
+  python windows/smoke_api.py "http://127.0.0.1:18741"
+  if ($LASTEXITCODE -ne 0) { throw '发布EXE导出与备份闭环自检失败' }
 } finally {
   if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
 }
@@ -92,6 +94,8 @@ Copy-Item (Join-Path $packageDir "BackendServer-internal") (Join-Path $serviceSm
 $serviceWrapper = Join-Path $serviceSmokeDir "FirmMatterService.exe"
 $serviceData = Join-Path $serviceSmokeDir "data"
 New-Item -ItemType Directory -Force $serviceData, (Join-Path $serviceData "logs") | Out-Null
+icacls $serviceData /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-19:(OI)(CI)M' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw '服务测试数据目录权限设置失败' }
 $serviceConfig = '{"bind_host":"127.0.0.1","port":18742,"public_host":""}'
 [System.IO.File]::WriteAllText((Join-Path $serviceData "server.json"), $serviceConfig, [System.Text.UTF8Encoding]::new($false))
 $serviceInstalled = $false
@@ -114,6 +118,8 @@ try {
     } catch { }
   }
   if (-not $serviceReady) { throw "Windows 服务未能提供当前版本 API" }
+  python windows/smoke_api.py "http://127.0.0.1:18742"
+  if ($LASTEXITCODE -ne 0) { throw 'LocalService导出与备份闭环自检失败' }
 } finally {
   if ($serviceInstalled) {
     & $serviceWrapper stop | Out-Null

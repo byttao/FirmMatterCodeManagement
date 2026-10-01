@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { projectApi, userApi } from '@/api/auth'
+import { projectApi, userApi, exportApi } from '@/api/auth'
 import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { useAuth } from '@/store/AuthContext'
 import type { Project, Practitioner } from '@/types'
@@ -65,6 +65,10 @@ export default function ProjectList() {
 
   const canCreateProject = user?.permissions.some(p => ['project.create.assign', 'project.create.self'].includes(p))
   const canRecycleNo = user?.permissions.includes('number.void')
+  async function exportFiltered(){
+    try{await exportApi.submit({export_type:'projects',filters:{fiscal_year:fiscalYear,search:search||undefined,firm:firm==='all'?undefined:firm,report_type:reportType==='all'?undefined:reportType,project_status:projectStatus==='all'?undefined:projectStatus,leader_id:leaderId==='all'?undefined:Number(leaderId)},columns:visibleColumns.filter(key=>key!=='contract_amount'||user?.permissions.some(p=>['finance.read.all','finance.summary.led'].includes(p)))});navigate('/exports')}
+    catch(e:any){window.alert(e.response?.data?.detail||'导出提交失败')}
+  }
 
   // 判断用户是否可以删除某个项目
   const canDeleteThisProject = (project: Project) => {
@@ -214,8 +218,9 @@ export default function ProjectList() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap gap-3 items-center justify-between">
         <h1 className="text-2xl font-bold">项目管理</h1>
+        {user?.permissions.some(p=>p.startsWith('project.export.'))&&<Button variant="outline" onClick={exportFiltered}>按筛选和显示列导出</Button>}
         {canCreateProject && (
           <Button onClick={() => navigate('/projects/new')}>
             <Plus className="w-4 h-4 mr-2" />

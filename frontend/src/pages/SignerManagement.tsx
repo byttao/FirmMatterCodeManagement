@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { signerApi, userApi } from '@/api/auth'
 import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { useAuth } from '@/store/AuthContext'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import type { Signer, SignerCreate, Practitioner } from '@/types'
 import { getSignerDisplayName, getUserDisplayName, isSignerEligible } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,7 @@ import { Plus, Edit, Trash2, Loader2, Download, Upload, Power, PowerOff } from '
 import { useToast } from '@/hooks/use-toast'
 
 export default function SignerManagement() {
+  const navigate=useNavigate()
   const { user } = useAuth()
 
   // 所有 Hooks 必须在条件语句之前调用（React Hooks 规则）
@@ -154,14 +155,9 @@ export default function SignerManagement() {
 
   const handleExport = async () => {
     try {
-      const res = await signerApi.export()
-      const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `signers_${new Date().toISOString().slice(0, 10)}.xlsx`
-      a.click()
-      URL.revokeObjectURL(url)
+      await signerApi.export()
+      toast({title:'已加入导出队列'})
+      navigate('/exports')
     } catch (err) {
       toast({ title: '导出失败', variant: 'destructive' })
     }

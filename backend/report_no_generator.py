@@ -22,6 +22,8 @@ def get_rule(db: Session, firm: str, report_type: str, year: int) -> "models.Rep
     从三级结构获取编号规则。
     找不到时直接抛出 ValueError，不降级到旧表或默认模板。
     """
+    rule=db.query(models.ReportNumberRule).join(models.FiscalYearReportType,models.FiscalYearReportType.rule_id==models.ReportNumberRule.id).join(models.FiscalYearFirm,models.FiscalYearFirm.id==models.FiscalYearReportType.fiscal_year_firm_id).join(models.FiscalYear,models.FiscalYear.id==models.FiscalYearFirm.fiscal_year_id).filter(models.FiscalYear.year==year,models.FiscalYearFirm.firm==firm,models.FiscalYearReportType.report_type==report_type,models.ReportNumberRule.fiscal_year_firm_id==models.FiscalYearFirm.id,models.ReportNumberRule.is_active==True).first()
+    if rule:return rule
     fy = db.query(models.FiscalYear).filter(models.FiscalYear.year == year).first()
     if not fy:
         raise ValueError(f"编号年度 {year} 未配置，请先在「编号年度配置」中添加该年度")
