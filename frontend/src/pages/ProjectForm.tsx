@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { projectApi, userApi, signerApi, customerApi } from '@/api/auth'
+import { projectApi, userApi, signerApi, customerApi, requestKey } from '@/api/auth'
 import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
 import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
@@ -23,7 +23,7 @@ interface Practitioner {
   id: number
   username: string
   real_name: string
-  role: string
+  is_practitioner: boolean
 }
 
 interface ProjectFormProps {
@@ -48,7 +48,12 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
   // 动态事务所和业务类型列表
   const [firmOptions, setFirmOptions] = useState<string[]>([])
   const [reportTypeOptions, setReportTypeOptions] = useState<string[]>([])
-  const [customerOptions, setCustomerOptions] = useState<{ id: number; tax_id: string; name: string }[]>([])
+  const [customerOptions, setCustomerOptions] = useState<{ id: number; tax_id_masked: string | null; name: string }[]>([])
+  const [customerSearch, setCustomerSearch] = useState('')
+  const [customerCursor, setCustomerCursor] = useState(0)
+  const [customerNext, setCustomerNext] = useState<number | null>(null)
+  const [conflict, setConflict] = useState<Project | null>(null)
+  const numberRequest = useRef<{key: string; revision: number} | null>(null)
 
   // 预览模式下重置 dirty 状态，避免刷新时弹出提示
   useEffect(() => {
@@ -85,7 +90,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     priority: '中',
     scale: '',
     business_source: '',
-    contract_amount: 0,
+    contract_amount: null,
     signer1_id: undefined,
     signer2_id: undefined,
   })
@@ -118,15 +123,25 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   useEffect(() => {
     loadAllPractitioners()
-    customerApi.list().then(res => setCustomerOptions(res.data)).catch(() => undefined)
     // 编辑或预览模式都需要加载项目数据
     if (isEdit || isPreview) {
       loadProject()
-    } else if (user?.id) {
+    } else if (user?.is_practitioner) {
       // 新建项目时，默认选择当前用户为负责人
       setFormData(prev => ({ ...prev, leader_id: user.id }))
     }
   }, [projectId, user?.id])
+
+  useEffect(() => {
+    let active = true
+    const timer = window.setTimeout(() => {
+      if (customerSearch.trim().length < 2) { setCustomerOptions([]); return }
+      customerApi.lookup(customerSearch.trim(), customerCursor).then(res => {
+        if (active) { setCustomerOptions(res.data.items); setCustomerNext(res.data.next_cursor) }
+      }).catch(() => undefined)
+    }, 300)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [customerSearch, customerCursor])
 
   useEffect(() => {
     loadFirms()
@@ -224,7 +239,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   // 当前用户如果是执业人员，保存其信息用于"选我"按钮
   const currentUserAsPractitioner = useMemo(() => {
-    if (user?.role === 'practitioner') {
+    if (user?.is_practitioner) {
       return allPractitioners.find(p => p.id === user.id)
     }
     return null
@@ -281,6 +296,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
         report_type: p.report_type,
         report_year: p.report_year,
         customer_name: p.customer_name,
+        customer_id: p.customer_id,
         customer_tax_id: p.customer_tax_id || '',
         contract_no: p.contract_no || '',
         order_date: p.order_date ? p.order_date.split('T')[0] : '',
@@ -387,14 +403,24 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
         ...formData,
         order_date: formData.order_date ? new Date(formData.order_date).toISOString() : undefined,
       }
+      if (!canEditContract) delete data.contract_amount
 
       if (isEdit && project) {
-        const fullData: ProjectUpdate = { ...data as ProjectUpdate }
-        await projectApi.update(project.id, fullData)
+        const changes = {expected_revision: project.revision, ...Object.fromEntries(Object.entries(data).filter(([key, value]) => {
+          if (key === 'fiscal_year' || (!isBasicFieldEditable && key !== 'contract_amount')) return false
+          const original = key === 'member_ids' ? project.members.map(m => m.user_id) : (project as any)[key]
+          return JSON.stringify(value ?? null) !== JSON.stringify(original ?? null)
+        }))} as ProjectUpdate
+        if (changes.leader_id && changes.leader_id !== project.leader_id) {
+          const reason = window.prompt('负责人移交原因')
+          if (!reason?.trim()) return
+          changes.reason = reason
+        }
+        await projectApi.update(project.id, changes)
         // 保存成功后重新加载项目，刷新服务端计算的字段（未开票金额、未收款金额等）
         await loadProject()
       } else {
-        const res = await projectApi.create(data as ProjectCreate)
+        const res = await projectApi.create({...data, fiscal_year: fiscalYear} as ProjectCreate)
         setProject(res.data)
         // 保存成功后直接导航，不需要确认
         setDirty(false)
@@ -404,6 +430,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
       alert('保存成功')
       setDirty(false)
     } catch (err: any) {
+      if (err.response?.status === 409 && project) setConflict((await projectApi.get(project.id)).data)
       alert(err.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
@@ -418,8 +445,10 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     }
     setGeneratingNo(true)
     try {
-      const res = await projectApi.generateReportNo(project.id)
-      setProject(prev => prev ? { ...prev, report_no: res.data.report_no, report_no_status: 'assigned' } : null)
+      if (!numberRequest.current || numberRequest.current.revision !== project.revision) numberRequest.current = {key: requestKey(), revision: project.revision}
+      const res = await projectApi.generateReportNo(project.id, project.revision, numberRequest.current.key)
+      setProject(prev => prev ? { ...prev, report_no: res.data.report_no, revision: res.data.revision, report_no_status: 'assigned' } : null)
+      numberRequest.current = null
       projectApi.reportHistory(project.id).then(history => setReportHistory(history.data)).catch(err => {
         console.error('刷新编号记录失败', err)
       })
@@ -431,8 +460,10 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
     }
   }
 
-  const isFinancialFieldEditable = user?.role === 'admin' || user?.role === 'admin_staff'
-  const isBasicFieldEditable = !project || project.leader_id === user?.id || user?.role === 'admin'
+  const isFinancialFieldEditable = !!user?.permissions.includes('finance.write')
+  const isBasicFieldEditable = user?.permissions.includes('project.edit.all_basic') || (user?.permissions.includes('project.edit.led') && (!project || project.leader_id === user.id))
+  const canEditContract = user?.permissions.includes('contract.write.all') || (user?.permissions.includes('contract.write.led') && (!project || project.leader_id === user.id && !project.report_no))
+  const canReadMoney = user?.permissions.includes('finance.read.all') || user?.permissions.includes('finance.summary.led') && (!project || project.leader_id === user.id)
   // 预览模式下所有字段不可编辑
   const isFieldDisabled = isPreview || !isBasicFieldEditable
 
@@ -442,6 +473,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
 
   return (
     <div className="space-y-6">
+      {conflict && <div role="alert" className="border-l-4 border-red-500 p-3 text-sm"><p>资料已更新至修订 {conflict.revision}，当前草稿未覆盖服务器。</p><p>服务器：客户 {conflict.customer_name}；状态 {conflict.project_status}；负责人 {conflict.leader?.real_name}；合同金额 {conflict.contract_amount ?? '未登记 / 无权限查看'}</p><Button type="button" variant="outline" onClick={() => {if (window.confirm('放弃当前草稿并加载服务器资料？')) {setConflict(null); loadProject()}}}>刷新资料</Button></div>}
       <div className="flex items-center gap-4">
         <Button variant="ghost" onClick={() => safeNavigate('/projects')}>
           <ArrowLeft className="w-4 h-4 mr-2" />
@@ -644,16 +676,18 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>客户名称 *</Label>
+                {!isFieldDisabled && !project?.report_no && <Input placeholder="按名称搜索客户" value={customerSearch} onChange={e => {setCustomerSearch(e.target.value); setCustomerCursor(0)}} />}
                 <Select value={formData.customer_id ? String(formData.customer_id) : 'manual'} onValueChange={(value) => {
                   if (value === 'manual') handleInputChange('customer_id', undefined)
                   else {
                     const selected = customerOptions.find(item => String(item.id) === value)
-                    if (selected) setFormData(previous => ({ ...previous, customer_id: selected.id, customer_name: selected.name, customer_tax_id: selected.tax_id }))
+                    if (selected) {setDirty(true); setFormData(previous => ({ ...previous, customer_id: selected.id, customer_name: selected.name, customer_tax_id: null }))}
                   }
-                }} disabled={isFieldDisabled}>
+                }} disabled={isFieldDisabled || !!project?.report_no}>
                   <SelectTrigger><SelectValue placeholder="选择客户主体" /></SelectTrigger>
-                  <SelectContent><SelectItem value="manual">手工填写</SelectItem>{customerOptions.map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name} ({item.tax_id})</SelectItem>)}</SelectContent>
+                  <SelectContent><SelectItem value="manual">新增待核验主体</SelectItem>{formData.customer_id && !customerOptions.some(c => c.id === formData.customer_id) && <SelectItem value={String(formData.customer_id)}>{formData.customer_name}</SelectItem>}{customerOptions.map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name} ({item.tax_id_masked || '无税号'})</SelectItem>)}</SelectContent>
                 </Select>
+                {customerNext && <Button type="button" size="sm" variant="outline" onClick={() => setCustomerCursor(customerNext)}>下一页</Button>}
                 {!formData.customer_id && <Input value={formData.customer_name} onChange={(e) => handleInputChange('customer_name', e.target.value)} disabled={isFieldDisabled} required />}
               </div>
               <div className="space-y-2">
@@ -661,7 +695,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
                 <Input
                   value={formData.customer_tax_id || ''}
                   onChange={(e) => handleInputChange('customer_tax_id', e.target.value)}
-                  disabled={isFieldDisabled}
+                  disabled={isFieldDisabled || !!formData.customer_id}
                   placeholder="用于锁定客户主体，避免更名后无法追溯"
                 />
               </div>
@@ -782,11 +816,12 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
               </div>
               <div className="space-y-2">
                 <Label>合同金额</Label>
-                <MoneyInput
+                {canReadMoney ? <MoneyInput
                   value={formData.contract_amount ?? 0}
                   onChange={(val) => handleInputChange('contract_amount', val)}
-                  disabled={isFieldDisabled}
-                />
+                  disabled={isPreview || !canEditContract}
+                /> : <p className="text-sm text-muted-foreground">无权限查看</p>}
+                {canReadMoney && formData.contract_amount === null && <span className="text-xs text-muted-foreground">未登记</span>}
               </div>
             </div>
 
@@ -1008,7 +1043,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
         </Card>
 
         {/* 财务信息 */}
-        {(isEdit || isPreview) && (
+        {(isEdit || isPreview) && canReadMoney && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -1021,7 +1056,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
         )}
 
         {/* 提交按钮 - 预览模式隐藏 */}
-        {!isPreview && isBasicFieldEditable && (
+        {!isPreview && (isBasicFieldEditable || canEditContract) && (
           <div className="flex justify-end gap-4">
             <Button type="button" variant="outline" onClick={() => { setDirty(false); navigate('/projects') }}>
               取消

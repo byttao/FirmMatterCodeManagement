@@ -47,6 +47,19 @@ class LoginThrottle:
             while len(self.entries) > 4096:
                 self.entries.popitem(last=False)
 
+    def consume(self, scope, actor, maximum=120, window=60):
+        now = time.monotonic()
+        key = (scope, str(actor))
+        with self.lock:
+            count, until = self.entries.pop(key, (0, 0))
+            count = count + 1 if until > now else 1
+            until = until if until > now else now + window
+            self.entries[key] = (count, until)
+            while len(self.entries) > 4096:
+                self.entries.popitem(last=False)
+            if count > maximum:
+                raise HTTPException(429, "操作过于频繁，请稍后重试")
+
 
 throttle = LoginThrottle()
 password_slots = threading.BoundedSemaphore(2)

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import selectinload, joinedload
 from datetime import timedelta, datetime
 from typing import Optional, List
 import os
@@ -40,6 +41,9 @@ from license_client import activate as activate_license, configured_server_url, 
 from otp import normalize_phone, generate_code, hash_code, send_sms_code
 from auth import issue_session
 from http_security import install_http_boundary, throttle, clear_session_cookies
+from permissions import has, require, project_scope, related_clause, project_response, can_read_money
+from audit import write_lock, check_revision, event
+from idempotency import lookup as idempotent_lookup, remember
 import asyncio
 
 initialize_schema(engine)
@@ -70,7 +74,7 @@ async def _license_heartbeat_loop():
 
 
 @app.on_event("startup")
-async def start_license_heartbeat():
+def start_license_heartbeat():
     global _license_heartbeat_task
     if license_required() or (read_license_document() is not None and license_status().get("mode") == "licensed"):
         _license_heartbeat_task = asyncio.create_task(_license_heartbeat_loop())
@@ -142,13 +146,13 @@ install_http_boundary(app, "FIRM_MANAGER", int(os.getenv("FIRM_MANAGER_PORT", "8
 
 
 @app.get("/api/license/status")
-async def get_license_status(request: Request, db: Session = Depends(get_db)):
+def get_license_status(request: Request, db: Session = Depends(get_db)):
     current = license_status()
     minimal = {key: current.get(key) for key in ("required", "allowed", "reason", "mode")}
     if not request.cookies.get("firm_session"):
         return minimal
     user = get_current_user(request, db)
-    if user.role != models.UserRole.ADMIN.value:
+    if not has(user, "license.manage"):
         return {**minimal, "features": sorted(license_features()) if license_features() is not None else None}
     features = license_features()
     document = current.get("document") or {}
@@ -163,7 +167,7 @@ async def get_license_status(request: Request, db: Session = Depends(get_db)):
         connection_reason = "尚未发送心跳检测"
     active_practitioners = db.query(models.User).filter_by(
         is_active=True,
-        role=models.UserRole.PRACTITIONER.value,
+        is_practitioner=True,
     ).count()
     active_projects = db.query(models.Project).filter(models.Project.is_deleted == False).count()
     try:
@@ -197,7 +201,7 @@ async def get_license_status(request: Request, db: Session = Depends(get_db)):
 
 @app.post("/api/license/activate")
 async def activate_license_file(data: schemas.LicenseActivationRequest, current_user: models.User = Depends(get_current_user)):
-    if current_user.role != models.UserRole.ADMIN.value:
+    if not has(current_user, "license.manage"):
         raise HTTPException(status_code=403, detail="只有管理员可以激活授权")
     try:
         result = await activate_license(data.license_document, data.server_url, data.instance_name)
@@ -208,7 +212,7 @@ async def activate_license_file(data: schemas.LicenseActivationRequest, current_
 
 @app.post("/api/license/heartbeat")
 async def send_license_heartbeat(current_user: models.User = Depends(get_current_user)):
-    if current_user.role != models.UserRole.ADMIN.value:
+    if not has(current_user, "license.manage"):
         raise HTTPException(status_code=403, detail="只有管理员可以手动更新授权状态")
     try:
         async with _license_heartbeat_lock:
@@ -241,7 +245,7 @@ def _set_setting(db: Session, key: str, value: dict) -> None:
 
 
 @app.get("/api/public/branding")
-async def get_public_branding(db: Session = Depends(get_db)):
+def get_public_branding(db: Session = Depends(get_db)):
     return _get_setting(db, "branding", {
         "short_name": "",
         "logo_data": "",
@@ -251,15 +255,15 @@ async def get_public_branding(db: Session = Depends(get_db)):
 
 
 @app.get("/api/settings/branding")
-async def get_branding(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role != models.UserRole.ADMIN.value:
+def get_branding(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if not has(current_user, "license.manage"):
         raise HTTPException(status_code=403, detail="无权限")
-    return await get_public_branding(db)
+    return get_public_branding(db)
 
 
 @app.put("/api/settings/branding")
-async def update_branding(data: schemas.BrandingSettings, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role != models.UserRole.ADMIN.value:
+def update_branding(data: schemas.BrandingSettings, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if not has(current_user, "license.manage"):
         raise HTTPException(status_code=403, detail="无权限")
     if data.logo_data and len(data.logo_data) > 1_500_000:
         raise HTTPException(status_code=400, detail="LOGO 文件不能超过 1.5 MB")
@@ -357,7 +361,7 @@ def ensure_unique_numbering_format(db: Session, template: str, year: int, exclud
 
 
 @app.get("/api/setup/status", response_model=schemas.SetupStatus)
-async def setup_status(db: Session = Depends(get_db)):
+def setup_status(db: Session = Depends(get_db)):
     """公开返回安装状态，供登录页决定是否进入安装向导。"""
     return {"initialized": is_system_initialized(db)}
 
@@ -426,7 +430,7 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
             username=username,
             hashed_password=get_password_hash(data.admin_password),
             real_name=real_name,
-            role=models.UserRole.ADMIN.value,
+            role_records=[models.UserRoleRecord(role_code="office_admin")],
             fiscal_year=data.fiscal_year,
         )
         fiscal_year = models.FiscalYear(year=data.fiscal_year)
@@ -508,7 +512,7 @@ def otp_login():
 
 
 @app.get("/api/auth/me", response_model=schemas.UserResponse)
-async def get_me(current_user: models.User = Depends(get_current_user)):
+def get_me(current_user: models.User = Depends(get_current_user)):
     return current_user
 
 
@@ -545,7 +549,7 @@ def change_password(data: schemas.PasswordChange, response: Response, db: Sessio
 
 # ==================== 用户管理 ====================
 @app.get("/api/users", response_model=list[schemas.UserResponse])
-async def list_users(
+def list_users(
     include_disabled: bool = False,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -559,14 +563,14 @@ async def list_users(
 
 
 @app.get("/api/users/practitioners", response_model=list[schemas.PractitionerResponse])
-async def list_practitioners(
+def list_practitioners(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """获取所有执业人员（用于项目表单选择负责人和成员）"""
     return db.query(models.User).filter(
         models.User.is_active == True,
-        models.User.role == models.UserRole.PRACTITIONER.value
+        models.User.is_practitioner == True
     ).all()
 
 
@@ -583,7 +587,7 @@ def get_full_pinyin(name: str) -> str:
 
 
 @app.get("/api/users/search", response_model=list[schemas.PractitionerResponse])
-async def search_users(
+def search_users(
     q: str = Query(..., min_length=1, description="搜索关键字（支持姓名、拼音、拼音首字母）"),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -593,7 +597,7 @@ async def search_users(
     """
     all_users = db.query(models.User).filter(
         models.User.is_active == True,
-        models.User.role == models.UserRole.PRACTITIONER.value
+        models.User.is_practitioner == True
     ).all()
 
     results = []
@@ -620,7 +624,7 @@ async def search_users(
 
 
 @app.get("/api/users/current-fiscal-year")
-async def get_current_fiscal_year(
+def get_current_fiscal_year(
     current_user: models.User = Depends(get_current_user)
 ):
     """获取当前操作年度"""
@@ -628,7 +632,7 @@ async def get_current_fiscal_year(
 
 
 @app.put("/api/users/current-fiscal-year")
-async def set_current_fiscal_year(
+def set_current_fiscal_year(
     data: dict,
     request: Request,
     db: Session = Depends(get_db),
@@ -649,16 +653,17 @@ async def set_current_fiscal_year(
 
 
 @app.post("/api/users", response_model=schemas.UserResponse)
-async def create_user(
+def create_user(
     user_data: schemas.UserCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     if not can_manage_users(current_user):
         raise HTTPException(status_code=403, detail="无权限")
-    if db.get_bind().dialect.name == "sqlite":
-        db.execute(text("BEGIN IMMEDIATE"))
-    if user_data.role == models.UserRole.PRACTITIONER.value:
+    password_hash = get_password_hash(user_data.password)
+    validate_identity(user_data.roles, user_data.is_practitioner, user_data.special_grants)
+    write_lock(db)
+    if user_data.is_practitioner:
         ensure_license_user_capacity(db)
 
     real_name = user_data.real_name.strip()
@@ -679,22 +684,36 @@ async def create_user(
     user = models.User(
         username=user_data.username,
         phone=phone,
-        hashed_password=get_password_hash(user_data.password),
+        hashed_password=password_hash,
         real_name=real_name,
-        role=user_data.role,
+        is_practitioner=user_data.is_practitioner,
+        role_records=[models.UserRoleRecord(role_code=r) for r in set(user_data.roles)],
+        special_grant_records=[models.UserSpecialGrant(permission_code=p) for p in set(user_data.special_grants)],
         fiscal_year=current_user.fiscal_year
     )
     db.add(user)
+    db.flush()
+    event(db, current_user, "identity.create", user, diff={"roles": user_data.roles, "is_practitioner": user_data.is_practitioner})
     db.commit()
     db.refresh(user)
     return user
 
 
-def ensure_admin_remains(db: Session, user: models.User, next_role: str, next_active: bool):
-    if (user.role == models.UserRole.ADMIN.value and user.is_active
-            and (next_role != models.UserRole.ADMIN.value or not next_active)):
-        active_admins = db.query(models.User.id).filter_by(
-            role=models.UserRole.ADMIN.value, is_active=True
+def validate_identity(roles, is_practitioner, grants):
+    if "practitioner" in roles and not is_practitioner:
+        raise HTTPException(422, "执业角色必须具有专业身份")
+    if "billing.export_sensitive" in grants and not (set(roles) & {"office_admin", "finance"}):
+        raise HTTPException(422, "敏感资料导出只允许授予财务或管理员")
+    if "project.export.related" in grants and "practitioner" not in roles:
+        raise HTTPException(422, "本人项目导出权限只允许授予执业角色")
+
+
+def ensure_admin_remains(db: Session, user: models.User, next_roles: list[str], next_active: bool):
+    if ("office_admin" in user.roles and user.is_active
+            and ("office_admin" not in next_roles or not next_active)):
+        active_admins = db.query(models.User.id).filter(
+            models.User.is_active == True,
+            models.User.role_records.any(models.UserRoleRecord.role_code == "office_admin"),
         ).count()
         if active_admins <= 1:
             raise HTTPException(status_code=400, detail="必须保留至少一名启用的管理人员")
@@ -713,7 +732,7 @@ def ensure_license_user_capacity(db: Session, additional: int = 1) -> None:
         return
     active_users = db.query(models.User).filter_by(
         is_active=True,
-        role=models.UserRole.PRACTITIONER.value,
+        is_practitioner=True,
     ).count()
     if active_users + additional > maximum:
         label = "试用模式" if trial_mode() and not license_required() else "当前授权"
@@ -736,95 +755,12 @@ def ensure_trial_capacity(db: Session, kind: str, additional: int = 1) -> None:
         raise LicenseCapacityError(status_code=402, detail=f"试用模式最多支持 {limit} 个{label}，请导入授权后继续使用")
 
 
-# ==================== 客户主数据 ====================
-@app.get("/api/customers", response_model=list[schemas.CustomerResponse])
-async def list_customers(
-    search: Optional[str] = None,
-    include_disabled: bool = False,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    query = db.query(models.Customer)
-    if not include_disabled:
-        query = query.filter(models.Customer.is_active == True)
-    if search:
-        query = query.filter(or_(models.Customer.name.contains(search), models.Customer.tax_id.contains(search)))
-    return query.order_by(models.Customer.name.asc(), models.Customer.id.asc()).limit(200).all()
-
-
-@app.post("/api/customers", response_model=schemas.CustomerResponse)
-async def create_customer(
-    data: schemas.CustomerCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    if current_user.role != models.UserRole.ADMIN.value:
-        raise HTTPException(status_code=403, detail="无权限管理客户")
-    tax_id = data.tax_id.strip().upper()
-    name = data.name.strip()
-    if not tax_id or not name:
-        raise HTTPException(status_code=400, detail="税号和客户名称不能为空")
-    if db.query(models.Customer).filter(models.Customer.tax_id == tax_id).first():
-        raise HTTPException(status_code=400, detail="税号已存在")
-    customer = models.Customer(tax_id=tax_id, name=name)
-    db.add(customer)
-    db.commit()
-    db.refresh(customer)
-    return customer
-
-
-@app.put("/api/customers/{customer_id}", response_model=schemas.CustomerResponse)
-async def update_customer(
-    customer_id: int,
-    data: schemas.CustomerUpdate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    if current_user.role != models.UserRole.ADMIN.value:
-        raise HTTPException(status_code=403, detail="无权限管理客户")
-    customer = db.get(models.Customer, customer_id)
-    if not customer:
-        raise HTTPException(status_code=404, detail="客户不存在")
-    name = data.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="客户名称不能为空")
-    if name != customer.name:
-        now = datetime.utcnow()
-        current_alias = db.query(models.CustomerAlias).filter(
-            models.CustomerAlias.customer_id == customer.id,
-            models.CustomerAlias.valid_to.is_(None),
-        ).first()
-        if current_alias:
-            current_alias.valid_to = now
-        if not db.query(models.CustomerAlias).filter_by(customer_id=customer.id, name=customer.name).first():
-            db.add(models.CustomerAlias(customer_id=customer.id, name=customer.name, valid_to=now))
-        customer.name = name
-        # 项目保留历史名称，但新建/编辑项目会使用主数据当前名称。
-    db.commit()
-    db.refresh(customer)
-    return customer
-
-
-def resolve_customer_for_project(db: Session, customer_id: int | None, tax_id: str | None, name: str) -> models.Customer | None:
-    if customer_id is not None:
-        customer = db.get(models.Customer, customer_id)
-        if not customer or not customer.is_active:
-            raise HTTPException(status_code=400, detail="所选客户不存在或已停用")
-        return customer
-    normalized_tax_id = (tax_id or "").strip().upper()
-    if not normalized_tax_id:
-        return None
-    customer = db.query(models.Customer).filter(models.Customer.tax_id == normalized_tax_id).first()
-    if customer:
-        return customer
-    customer = models.Customer(tax_id=normalized_tax_id, name=name.strip())
-    db.add(customer)
-    db.flush()
-    return customer
+from customers import router as customer_router, resolve_for_project
+app.include_router(customer_router)
 
 
 @app.put("/api/users/{user_id}", response_model=schemas.UserResponse)
-async def update_user(
+def update_user(
     user_id: int,
     user_data: schemas.UserUpdate,
     db: Session = Depends(get_db),
@@ -832,16 +768,24 @@ async def update_user(
 ):
     if not can_manage_users(current_user):
         raise HTTPException(status_code=403, detail="无权限")
-    if db.get_bind().dialect.name == "sqlite":
-        db.execute(text("BEGIN IMMEDIATE"))
-
+    password_hash = get_password_hash(user_data.password) if user_data.password else None
+    write_lock(db)
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    next_role = user_data.role if user_data.role is not None else user.role
+    check_revision(type("IdentityRevision", (), {"revision": user.permission_revision})(), user_data.expected_revision)
+    next_practitioner = user_data.is_practitioner if user_data.is_practitioner is not None else user.is_practitioner
+    next_roles = user_data.roles if user_data.roles is not None else user.roles
+    if not next_practitioner:
+        next_roles = [r for r in next_roles if r != "practitioner"]
+    next_grants = user_data.special_grants if user_data.special_grants is not None else user.special_grants
+    validate_identity(next_roles, next_practitioner, next_grants)
     next_active = user_data.is_active if user_data.is_active is not None else user.is_active
-    ensure_admin_remains(db, user, next_role, next_active)
+    ensure_admin_remains(db, user, next_roles, next_active)
+    if user.is_practitioner and (not next_practitioner or not next_active):
+        if db.query(models.Project.id).filter_by(leader_id=user.id, is_deleted=False).filter(models.Project.project_status.in_(["进行中", "已暂停"])).first():
+            raise HTTPException(409, "请先移交该人员当前负责的项目")
     if user_data.phone is not None:
         phone = user_data.phone.strip() or None
         if phone and not re.fullmatch(r"\+?[0-9][0-9 -]{5,20}", phone):
@@ -852,8 +796,8 @@ async def update_user(
         user.phone = phone
     becomes_practitioner = (
         next_active
-        and next_role == models.UserRole.PRACTITIONER.value
-        and (not user.is_active or user.role != models.UserRole.PRACTITIONER.value)
+        and next_practitioner
+        and (not user.is_active or not user.is_practitioner)
     )
     if becomes_practitioner:
         ensure_license_user_capacity(db)
@@ -868,15 +812,17 @@ async def update_user(
         db.query(models.Signer).filter(models.Signer.user_id == user.id).update(
             {models.Signer.name: real_name}, synchronize_session=False
         )
-    if user_data.role is not None:
-        user.role = user_data.role
-    if user_data.password:
-        user.hashed_password = get_password_hash(user_data.password)
+    user.is_practitioner = next_practitioner
+    user.role_records = [models.UserRoleRecord(role_code=r) for r in set(next_roles)]
+    user.special_grant_records = [models.UserSpecialGrant(permission_code=p) for p in set(next_grants)]
+    if password_hash:
+        user.hashed_password = password_hash
     if user_data.is_active is not None:
         user.is_active = user_data.is_active
 
-    if any(field in user_data.__fields_set__ for field in ("password", "role", "is_active")):
-        user.session_version += 1
+    user.permission_revision += 1
+    user.session_version += 1
+    event(db, current_user, "identity.update", user, diff={"roles": next_roles, "is_practitioner": next_practitioner, "is_active": next_active, "special_grants": next_grants})
 
     db.commit()
     db.refresh(user)
@@ -884,7 +830,7 @@ async def update_user(
 
 
 @app.delete("/api/users/{user_id}")
-async def delete_user(
+def delete_user(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -900,9 +846,13 @@ async def delete_user(
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    ensure_admin_remains(db, user, user.role, False)
+    ensure_admin_remains(db, user, user.roles, False)
+    if db.query(models.Project.id).filter_by(leader_id=user.id, is_deleted=False).filter(models.Project.project_status.in_(["进行中", "已暂停"])).first():
+        raise HTTPException(409, "请先移交该人员当前负责的项目")
     user.is_active = False
+    user.permission_revision += 1
     user.session_version += 1
+    event(db, current_user, "identity.disable", user)
     db.commit()
     return {"message": "删除成功"}
 
@@ -910,7 +860,7 @@ async def delete_user(
 # ==================== 签字人管理 ====================
 def eligible_signer_user(db: Session, user_id: int) -> models.User:
     user = db.query(models.User).filter_by(id=user_id).first()
-    if not user or not user.is_active or user.role != models.UserRole.PRACTITIONER.value:
+    if not user or not user.is_active or not user.is_practitioner:
         raise HTTPException(status_code=400, detail="所选人员必须是启用的执业人员账号")
     return user
 
@@ -970,7 +920,7 @@ def append_export_row(sheet, values):
 
 
 @app.get("/api/signers", response_model=list[schemas.SignerResponse])
-async def list_signers(
+def list_signers(
     signer_type: Optional[str] = None,
     include_disabled: bool = False,
     eligible_only: bool = False,
@@ -981,7 +931,7 @@ async def list_signers(
     - signer_type: 按事务所名称筛选
     - include_disabled: 是否包含已禁用的签字人，默认否
     """
-    if not eligible_only and current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not eligible_only and not has(current_user, "signer.manage"):
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     query = db.query(models.Signer)
@@ -992,19 +942,19 @@ async def list_signers(
     if eligible_only:
         query = query.filter(
             models.Signer.user_id.isnot(None),
-            models.Signer.user.has(is_active=True, role=models.UserRole.PRACTITIONER.value),
+            models.Signer.user.has(is_active=True, is_practitioner=True),
         )
     return query.order_by(models.Signer.signer_type, models.Signer.name).all()
 
 
 @app.post("/api/signers", response_model=schemas.SignerResponse)
-async def create_signer(
+def create_signer(
     signer_data: schemas.SignerCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """创建签字人"""
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not has(current_user, "signer.manage"):
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     user = eligible_signer_user(db, signer_data.user_id)
@@ -1030,14 +980,14 @@ async def create_signer(
 
 
 @app.put("/api/signers/{signer_id}", response_model=schemas.SignerResponse)
-async def update_signer(
+def update_signer(
     signer_id: int,
     signer_data: schemas.SignerUpdate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """更新签字人"""
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not has(current_user, "signer.manage"):
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     signer = db.query(models.Signer).filter(models.Signer.id == signer_id).first()
@@ -1076,13 +1026,13 @@ async def update_signer(
 
 
 @app.delete("/api/signers/{signer_id}")
-async def delete_signer(
+def delete_signer(
     signer_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """物理删除签字人"""
-    if current_user.role != models.UserRole.ADMIN.value:
+    if not has(current_user, "signer.delete"):
         raise HTTPException(status_code=403, detail="只有管理人员可以删除签字人")
 
     signer = db.query(models.Signer).filter(models.Signer.id == signer_id).first()
@@ -1102,13 +1052,13 @@ async def delete_signer(
 
 
 @app.post("/api/signers/{signer_id}/disable")
-async def disable_signer(
+def disable_signer(
     signer_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """禁用签字人"""
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not has(current_user, "signer.manage"):
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     signer = db.query(models.Signer).filter(models.Signer.id == signer_id).first()
@@ -1122,13 +1072,13 @@ async def disable_signer(
 
 
 @app.post("/api/signers/{signer_id}/enable")
-async def enable_signer(
+def enable_signer(
     signer_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """启用签字人"""
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not has(current_user, "signer.manage"):
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     signer = db.query(models.Signer).filter(models.Signer.id == signer_id).first()
@@ -1145,7 +1095,7 @@ async def enable_signer(
 
 
 @app.post("/api/signers/import")
-async def import_signers(
+def import_signers(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -1153,7 +1103,7 @@ async def import_signers(
     """导入签字人（Excel格式）
     Excel格式：账号, 事务所
     """
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not has(current_user, "signer.manage"):
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     filename = file.filename or ""
@@ -1161,7 +1111,7 @@ async def import_signers(
         raise HTTPException(status_code=400, detail="只支持 xlsx 格式")
 
     try:
-        wb = load_workbook(BytesIO(await file.read()), read_only=True, data_only=True)
+        wb = load_workbook(file.file, read_only=True, data_only=True)
     except Exception:
         raise HTTPException(status_code=400, detail="Excel 文件无法读取，请检查文件格式")
 
@@ -1182,7 +1132,7 @@ async def import_signers(
             skipped += 1
             continue
         user = db.query(models.User).filter_by(username=username).first()
-        if not user or not user.is_active or user.role != models.UserRole.PRACTITIONER.value:
+        if not user or not user.is_active or not user.is_practitioner:
             errors.append(f"第{row_idx}行：账号 {username} 不是启用的执业人员")
             skipped += 1
             continue
@@ -1221,12 +1171,12 @@ async def import_signers(
 
 
 @app.get("/api/signers/export")
-async def export_signers(
+def export_signers(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """导出签字人（Excel格式）"""
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not has(current_user, "signer.manage"):
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     signers = db.query(models.Signer).order_by(
@@ -1272,12 +1222,12 @@ async def export_signers(
 
 
 @app.get("/api/signers/template")
-async def download_signer_template(
+def download_signer_template(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """下载签字人导入模板"""
-    if current_user.role not in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
+    if not has(current_user, "signer.manage"):
         raise HTTPException(status_code=403, detail="无权限管理签字人")
 
     # 获取事务所列表用于示例
@@ -1361,8 +1311,24 @@ def resolve_project(db: Session, project_id: str):
     return project
 
 
+def explicit_year(db, fiscal_year):
+    if fiscal_year is None:
+        raise HTTPException(422, "请明确指定编号年度fiscal_year")
+    if not db.query(models.FiscalYear.id).filter_by(year=fiscal_year, is_active=True).first():
+        raise HTTPException(422, "该编号年度未启用")
+    return fiscal_year
+
+
+def loaded_projects(query):
+    return query.options(joinedload(models.Project.leader),
+        joinedload(models.Project.signer1).joinedload(models.Signer.user),
+        joinedload(models.Project.signer2).joinedload(models.Signer.user),
+        selectinload(models.Project.members).joinedload(models.ProjectMember.user))
+
+
 @app.get("/api/projects", response_model=schemas.ProjectListResponse)
-async def list_projects(
+def list_projects(
+    fiscal_year: Optional[int] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
@@ -1381,18 +1347,8 @@ async def list_projects(
     if year is not None:
         raise HTTPException(status_code=400, detail="year 参数已移除，请改用 report_year（业务年度）")
 
-    query = db.query(models.Project).filter(models.Project.is_deleted == False)
-
-    # 执业人员只能看自己参与的项目
-    if current_user.role == models.UserRole.PRACTITIONER.value:
-        query = query.filter(
-            or_(
-                models.Project.leader_id == current_user.id,
-                models.Project.members.any(models.ProjectMember.user_id == current_user.id),
-                models.Project.signer1.has(models.Signer.user_id == current_user.id),
-                models.Project.signer2.has(models.Signer.user_id == current_user.id),
-            )
-        )
+    query = project_scope(db.query(models.Project).filter(models.Project.is_deleted == False), current_user)
+    query = query.filter(models.Project.fiscal_year == explicit_year(db, fiscal_year))
 
     # 筛选条件
     if search:
@@ -1413,9 +1369,6 @@ async def list_projects(
     if report_year is not None:
         # 显式传入业务年度时，仅筛选审计对象所属年度。
         query = query.filter(models.Project.report_year == report_year)
-    else:
-        # 默认按当前用户的操作年度过滤
-        query = query.filter(models.Project.fiscal_year == current_user.fiscal_year)
 
     total = query.count()
     sortable = {
@@ -1428,6 +1381,8 @@ async def list_projects(
         "contract_amount": models.Project.contract_amount,
         "created_at": models.Project.created_at,
     }
+    if not has(current_user, "finance.read.all"):
+        sortable.pop("contract_amount", None)
     sort_clauses = []
     if sort:
         try:
@@ -1444,11 +1399,11 @@ async def list_projects(
     if not sort_clauses:
         sort_column = sortable.get(sort_by, models.Project.created_at)
         sort_clauses.append(sort_column.asc() if sort_order.lower() == "asc" else sort_column.desc())
-    items = query.order_by(*sort_clauses, models.Project.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = loaded_projects(query).order_by(*sort_clauses, models.Project.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
     # 显式转换为 Pydantic 模型，确保 fiscal_year 字段被正确序列化
     return schemas.ProjectListResponse(
-        items=[schemas.ProjectResponse.from_orm(item) for item in items],
+        items=[project_response(item, current_user) for item in items],
         total=total,
         page=page,
         page_size=page_size
@@ -1456,24 +1411,25 @@ async def list_projects(
 
 
 @app.get("/api/projects/signed-by-me", response_model=schemas.ProjectListResponse)
-async def signed_projects(
+def signed_projects(
+    fiscal_year: Optional[int] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    if current_user.role != models.UserRole.PRACTITIONER.value:
+    if not current_user.is_practitioner:
         raise HTTPException(status_code=403, detail="只有执业人员可查看签字项目")
     query = db.query(models.Project).filter(
         models.Project.is_deleted == False,
-        models.Project.fiscal_year == current_user.fiscal_year,
+        models.Project.fiscal_year == explicit_year(db, fiscal_year),
         or_(
             models.Project.signer1.has(models.Signer.user_id == current_user.id),
             models.Project.signer2.has(models.Signer.user_id == current_user.id),
         ),
     )
     return schemas.ProjectListResponse(
-        items=[schemas.ProjectResponse.from_orm(item) for item in query.order_by(
+        items=[project_response(item, current_user) for item in loaded_projects(project_scope(query, current_user)).order_by(
             models.Project.created_at.desc(), models.Project.id.desc()
         ).offset((page - 1) * page_size).limit(page_size).all()],
         total=query.count(), page=page, page_size=page_size,
@@ -1481,7 +1437,7 @@ async def signed_projects(
 
 
 @app.get("/api/projects/{project_id}", response_model=schemas.ProjectResponse)
-async def get_project(
+def get_project(
     project_id: str,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -1494,11 +1450,11 @@ async def get_project(
     if not can_view_project(current_user, project):
         raise HTTPException(status_code=403, detail="无权限查看此项目")
 
-    return project
+    return project_response(project, current_user)
 
 
 @app.get("/api/projects/{project_id}/report-number-history", response_model=List[schemas.ReportNumberHistoryResponse])
-async def get_report_number_history(
+def get_report_number_history(
     project_id: str,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
@@ -1521,13 +1477,16 @@ def create_project(
 ):
     if not can_create_project(current_user):
         raise HTTPException(status_code=403, detail="无权限创建项目")
-    ensure_trial_capacity(db, "projects")
-
     if db.get_bind().dialect.name == "sqlite":
         db.execute(text("BEGIN IMMEDIATE"))
+    ensure_trial_capacity(db, "projects")
+    if not has(current_user, "project.create.assign") and project_data.leader_id != current_user.id:
+        raise HTTPException(403, "执业人员新建项目只能由本人负责")
+    if project_data.contract_amount is not None and not (has(current_user, "contract.write.all") or (has(current_user, "contract.write.led") and project_data.leader_id == current_user.id)):
+        raise HTTPException(403, "无权限登记合同金额")
 
     # 获取用户的当前操作年度
-    fiscal_year = current_user.fiscal_year or datetime.now().year
+    fiscal_year = explicit_year(db, project_data.fiscal_year)
 
     # 报告年份不能超过编号年度
     if project_data.report_year > fiscal_year:
@@ -1543,8 +1502,8 @@ def create_project(
 
     validate_project_people(db, project_data.leader_id, project_data.member_ids or [])
     validate_project_signers(db, (project_data.signer1_id, project_data.signer2_id), project_data.firm)
-    customer = resolve_customer_for_project(
-        db, project_data.customer_id, project_data.customer_tax_id, project_data.customer_name
+    customer = resolve_for_project(
+        db, project_data.customer_id, project_data.customer_tax_id, project_data.customer_name, current_user
     )
 
     # 生成项目ID（使用当前操作年度），带竞态条件保护
@@ -1566,11 +1525,9 @@ def create_project(
         priority=project_data.priority,
         scale=project_data.scale,
         business_source=project_data.business_source,
-        contract_amount=project_data.contract_amount,
+        contract_amount=float(project_data.contract_amount) if project_data.contract_amount is not None else None,
         signer1_id=project_data.signer1_id,
         signer2_id=project_data.signer2_id,
-        uninvoiced_amount=project_data.contract_amount,
-        unreceived_amount=0,
         report_no_status=models.ReportStatus.PENDING.value,
         fiscal_year=fiscal_year  # 保存创建时的编号年度
     )
@@ -1584,29 +1541,46 @@ def create_project(
         member = models.ProjectMember(project_id=project.id, user_id=member_id)
         db.add(member)
 
+    event(db, current_user, "project.create", project, project_id=project.id)
+
     db.commit()
     db.refresh(project)
-    return project
+    return project_response(project, current_user)
 
 
+@app.patch("/api/projects/{project_id}", response_model=schemas.ProjectResponse)
 @app.put("/api/projects/{project_id}", response_model=schemas.ProjectResponse)
-async def update_project(
+def update_project(
     project_id: str,
     project_data: schemas.ProjectUpdate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    write_lock(db)
     project = resolve_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
 
-    update_data = project_data.dict(exclude_unset=True)
+    update_data = project_data.dict(exclude_unset=True, exclude={"expected_revision", "reason"})
     if "customer_tax_id" in update_data:
         update_data["customer_tax_id"] = (update_data["customer_tax_id"] or "").strip() or None
-    if not can_edit_project(current_user, project):
+    financial_only = set(update_data) == {"contract_amount"} and has(current_user, "contract.write.all")
+    if not can_edit_project(current_user, project) and not financial_only:
         raise HTTPException(status_code=403, detail="无权限编辑此项目")
     if not update_data:
         raise HTTPException(status_code=422, detail={"code": "empty_update", "message": "请提供要修改的字段"})
+    check_revision(project, project_data.expected_revision)
+    if "leader_id" in update_data and update_data["leader_id"] != project.leader_id:
+        require(current_user, "project.transfer")
+        if not project_data.reason:
+            raise HTTPException(422, "移交负责人必须填写原因")
+    if "contract_amount" in update_data:
+        if not (has(current_user, "contract.write.all") or (has(current_user, "contract.write.led") and project.leader_id == current_user.id and not project.report_no)):
+            raise HTTPException(403, "无权限修改合同金额")
+        if update_data["contract_amount"] is not None:
+            update_data["contract_amount"] = float(update_data["contract_amount"])
+    if project.report_no and any(field in update_data and update_data[field] != getattr(project, field) for field in ("customer_id", "customer_name", "customer_tax_id")):
+        raise HTTPException(409, "首次发号后客户归属只能由管理员通过纠错流程调整")
 
     if project.report_no and any(
         field in update_data and update_data[field] != getattr(project, field)
@@ -1638,11 +1612,12 @@ async def update_project(
     )
 
     if any(field in update_data for field in ("customer_id", "customer_tax_id")):
-        customer = resolve_customer_for_project(
+        customer = resolve_for_project(
             db,
             update_data.get("customer_id", project.customer_id),
             update_data.get("customer_tax_id", project.customer_tax_id),
             update_data.get("customer_name", project.customer_name),
+            current_user,
         )
         if customer:
             update_data["customer_id"] = customer.id
@@ -1666,6 +1641,9 @@ async def update_project(
 
     # 更新计算字段
     refresh_project_finance(db, project)
+    project.revision += 1
+    event(db, current_user, "project.update", project, reason=project_data.reason,
+          diff={"fields": sorted(project_data.__fields_set__ - {"expected_revision", "reason"})}, project_id=project.id)
 
     try:
         db.commit()
@@ -1674,7 +1652,7 @@ async def update_project(
         db.rollback()
         raise HTTPException(status_code=500, detail="保存失败，请联系管理员并提供请求编号") from e
 
-    return project
+    return project_response(project, current_user)
 
 
 def finance_kind(kind: str) -> str:
@@ -1692,11 +1670,13 @@ def finance_project(db: Session, project_id: str, user: models.User, write: bool
         raise HTTPException(status_code=403, detail="无权限编辑财务记录")
     if not can_view_project(user, project):
         raise HTTPException(status_code=403, detail="无权限查看此项目")
+    if not write:
+        require(user, "finance.read.all")
     return project
 
 
 @app.get("/api/projects/{project_id}/finance/{kind}", response_model=List[schemas.FinancialEntryResponse])
-async def list_financial_entries(
+def list_financial_entries(
     project_id: str, kind: str, db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -1708,7 +1688,7 @@ async def list_financial_entries(
 
 
 @app.post("/api/projects/{project_id}/finance/{kind}", response_model=schemas.FinancialEntryResponse)
-async def create_financial_entry(
+def create_financial_entry(
     project_id: str, kind: str, data: schemas.FinancialEntryCreate,
     db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
 ):
@@ -1736,7 +1716,7 @@ def get_financial_entry(db: Session, project: models.Project, kind: str, entry_i
 
 
 @app.put("/api/projects/{project_id}/finance/{kind}/{entry_id}", response_model=schemas.FinancialEntryResponse)
-async def update_financial_entry(
+def update_financial_entry(
     project_id: str, kind: str, entry_id: int, data: schemas.FinancialEntryUpdate,
     db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
 ):
@@ -1759,7 +1739,7 @@ async def update_financial_entry(
 
 
 @app.delete("/api/projects/{project_id}/finance/{kind}/{entry_id}")
-async def delete_financial_entry(
+def delete_financial_entry(
     project_id: str, kind: str, entry_id: int,
     db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user),
 ):
@@ -1773,30 +1753,36 @@ async def delete_financial_entry(
 
 
 @app.delete("/api/projects/{project_id}")
-async def delete_project(
+def delete_project(
     project_id: str,
+    expected_revision: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    write_lock(db)
     project = resolve_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
 
     if not can_delete_project(current_user, project):
         raise HTTPException(status_code=403, detail="无权限删除项目")
+    check_revision(project, expected_revision)
 
     # 软删除并回收编号
     project.is_deleted = True
-    recycle_report_no(db, project)
+    project.revision += 1
+    event(db, current_user, "project.delete_draft", project, project_id=project.id)
     db.commit()
 
-    return {"message": "删除成功，编号已回收"}
+    return {"message": "草稿已删除"}
 
 
 # ==================== 报告编号生成 ====================
 @app.post("/api/projects/{project_id}/generate-report-no")
 def generate_report_number(
     project_id: str,
+    data: schemas.RevisionRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1816,6 +1802,16 @@ def generate_report_number(
 
     if not can_edit_project(current_user, project):
         raise HTTPException(status_code=403, detail="无权限为此项目生成编号")
+    operation = f"number.issue:{project.id}"
+    key = request.headers.get("Idempotency-Key")
+    prior, payload_hash = idempotent_lookup(db, current_user, operation, key, data.dict())
+    if prior:
+        if project.report_no_status != "assigned" or project.report_no != prior["report_no"]:
+            raise HTTPException(409, "原编号已作废，请核对项目后重新提交")
+        return prior
+    check_revision(project, data.expected_revision)
+    if not project.customer or project.customer.identity_status != "confirmed":
+        raise HTTPException(409, "请先由财务确认客户主体；开票资料不完整不影响发号")
 
     # 检查是否可以生成编号
     if project.report_no_status == models.ReportStatus.ASSIGNED.value:
@@ -1850,27 +1846,37 @@ def generate_report_number(
 
     project.report_no = report_no
     project.report_no_status = models.ReportStatus.ASSIGNED.value
+    project.revision += 1
+    result = {"report_no": report_no, "revision": project.revision, "message": "编号生成成功"}
+    remember(db, current_user, operation, key, payload_hash, result)
+    event(db, current_user, "number.issue", project, diff={"report_no": report_no}, request=request, project_id=project.id)
     if db.get_bind().dialect.name != "sqlite":
         db.add(models.ReportNumberHistory(project_id=project.id, report_no=report_no))
     db.commit()
     db.refresh(project)
 
-    return {"report_no": report_no, "message": "编号生成成功"}
+    return result
 
 
-@app.post("/api/projects/{project_id}/recycle-report-no")
-async def recycle_report_number(
+@app.post("/api/projects/{project_id}/void-report-no")
+def recycle_report_number(
     project_id: str,
+    data: schemas.ReasonRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     if not can_delete_project(current_user):
         raise HTTPException(status_code=403, detail="无权限回收编号")
 
+    write_lock(db)
     project = resolve_project(db, project_id)
 
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    check_revision(project, data.expected_revision)
+    if not data.reason.strip():
+        raise HTTPException(422, "作废必须填写原因")
 
     if not project.report_no:
         raise HTTPException(status_code=400, detail="项目没有报告编号")
@@ -1878,6 +1884,8 @@ async def recycle_report_number(
         raise HTTPException(status_code=400, detail="编号已回收")
 
     recycle_report_no(db, project)
+    project.revision += 1
+    event(db, current_user, "number.void", project, reason=data.reason, request=request, project_id=project.id)
     db.commit()
     db.refresh(project)
 
@@ -1886,31 +1894,15 @@ async def recycle_report_number(
 
 # ==================== 看板统计 ====================
 @app.get("/api/dashboard", response_model=schemas.DashboardStats)
-async def get_dashboard(
+def get_dashboard(
     fiscal_year: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     from calendar import monthrange
 
-    query = db.query(models.Project).filter(models.Project.is_deleted == False)
-
-    # 按年度过滤：如果提供了 fiscal_year 参数则使用，否则使用当前用户的操作年度
-    filter_year = fiscal_year or current_user.fiscal_year
-    if filter_year:
-        query = query.filter(models.Project.fiscal_year == filter_year)
-
-    # 执业人员只能看自己的项目
-    if current_user.role == models.UserRole.PRACTITIONER.value:
-        query = query.filter(
-            or_(
-                models.Project.leader_id == current_user.id,
-                models.Project.members.any(models.ProjectMember.user_id == current_user.id),
-                models.Project.signer1.has(models.Signer.user_id == current_user.id),
-                models.Project.signer2.has(models.Signer.user_id == current_user.id),
-            )
-        )
-
+    query = project_scope(db.query(models.Project).filter(models.Project.is_deleted == False), current_user)
+    query = query.filter(models.Project.fiscal_year == explicit_year(db, fiscal_year))
     projects = query.all()
 
     # 统计
@@ -1926,11 +1918,13 @@ async def get_dashboard(
     this_month_new = len([p for p in projects if p.created_at >= first_day])
 
     # 金额统计
-    total_contract = sum(p.contract_amount or 0 for p in projects)
-    total_invoiced = sum(p.invoiced_amount or 0 for p in projects)
-    total_received = sum(p.received_amount or 0 for p in projects)
-    total_uninvoiced = sum(p.uninvoiced_amount or 0 for p in projects)
-    total_unreceived = sum(p.unreceived_amount or 0 for p in projects)
+    money_projects = [p for p in projects if can_read_money(current_user, p)]
+    totals_visible = has(current_user, "finance.read.all") or has(current_user, "finance.summary.led")
+    total_contract = sum(p.contract_amount or 0 for p in money_projects) if totals_visible else None
+    total_invoiced = sum(p.invoiced_amount or 0 for p in money_projects) if totals_visible else None
+    total_received = sum(p.received_amount or 0 for p in money_projects) if totals_visible else None
+    total_uninvoiced = sum(p.uninvoiced_amount or 0 for p in money_projects) if totals_visible else None
+    total_unreceived = sum(p.unreceived_amount or 0 for p in money_projects) if totals_visible else None
 
     return schemas.DashboardStats(
         total_projects=total,
@@ -1948,7 +1942,7 @@ async def get_dashboard(
 
 
 @app.get("/api/public/numbered-years")
-async def public_list_numbered_years(db: Session = Depends(get_db)):
+def public_list_numbered_years(db: Session = Depends(get_db)):
     years = db.query(models.FiscalYear.year).order_by(
         models.FiscalYear.year.desc()
     ).all()
@@ -1958,7 +1952,7 @@ async def public_list_numbered_years(db: Session = Depends(get_db)):
 # ==================== 编号年度配置管理 ====================
 
 @app.get("/api/numbered-years/options")
-async def numbered_year_options(
+def numbered_year_options(
     year: Optional[int] = None,
     firm: Optional[str] = None,
     db: Session = Depends(get_db),
@@ -1979,7 +1973,7 @@ async def numbered_year_options(
     }
 
 @app.get("/api/numbered-years")
-async def list_numbered_years(
+def list_numbered_years(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -2044,7 +2038,7 @@ async def list_numbered_years(
 
 # 年度管理
 @app.post("/api/numbered-years", response_model=schemas.FiscalYearResponse)
-async def create_numbered_year(
+def create_numbered_year(
     data: schemas.FiscalYearCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2068,7 +2062,7 @@ async def create_numbered_year(
 
 
 @app.delete("/api/numbered-years/{year_id}")
-async def delete_numbered_year(
+def delete_numbered_year(
     year_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2095,7 +2089,7 @@ async def delete_numbered_year(
 
 # 事务所管理
 @app.post("/api/numbered-years/firms", response_model=schemas.FiscalYearFirmResponse)
-async def create_fiscal_year_firm(
+def create_fiscal_year_firm(
     data: schemas.FiscalYearFirmCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2126,7 +2120,7 @@ async def create_fiscal_year_firm(
 
 
 @app.delete("/api/numbered-years/firms/{firm_id}")
-async def delete_fiscal_year_firm(
+def delete_fiscal_year_firm(
     firm_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2151,7 +2145,7 @@ async def delete_fiscal_year_firm(
 
 # 编号规则管理
 @app.post("/api/numbered-years/rules", response_model=schemas.ReportNumberRuleResponse)
-async def create_report_number_rule(
+def create_report_number_rule(
     data: schemas.ReportNumberRuleCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2195,7 +2189,7 @@ async def create_report_number_rule(
 
 
 @app.put("/api/numbered-years/rules/{rule_id}", response_model=schemas.ReportNumberRuleResponse)
-async def update_report_number_rule(
+def update_report_number_rule(
     rule_id: int,
     data: schemas.ReportNumberRuleUpdate,
     db: Session = Depends(get_db),
@@ -2243,7 +2237,7 @@ async def update_report_number_rule(
 
 
 @app.delete("/api/numbered-years/rules/{rule_id}")
-async def delete_report_number_rule(
+def delete_report_number_rule(
     rule_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2266,7 +2260,7 @@ async def delete_report_number_rule(
 
 # 业务类型管理
 @app.post("/api/numbered-years/report-types", response_model=schemas.FiscalYearReportTypeResponse)
-async def create_fiscal_year_report_type(
+def create_fiscal_year_report_type(
     data: schemas.FiscalYearReportTypeCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2308,7 +2302,7 @@ async def create_fiscal_year_report_type(
 
 
 @app.put("/api/numbered-years/report-types/{rt_id}", response_model=schemas.FiscalYearReportTypeResponse)
-async def update_fiscal_year_report_type(
+def update_fiscal_year_report_type(
     rt_id: int,
     data: schemas.FiscalYearReportTypeUpdate,
     db: Session = Depends(get_db),
@@ -2355,7 +2349,7 @@ async def update_fiscal_year_report_type(
 
 
 @app.delete("/api/numbered-years/report-types/{rt_id}")
-async def delete_fiscal_year_report_type(
+def delete_fiscal_year_report_type(
     rt_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2381,7 +2375,7 @@ async def delete_fiscal_year_report_type(
 
 # ==================== Excel 导出 ====================
 @app.get("/api/export/projects")
-async def export_projects(
+def export_projects(
     fiscal_year: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2389,12 +2383,8 @@ async def export_projects(
     if not can_export(current_user):
         raise HTTPException(status_code=403, detail="无权限导出")
 
-    query = db.query(models.Project).filter(models.Project.is_deleted == False)
-
-    # 按年度过滤：如果提供了 fiscal_year 参数则使用，否则使用当前用户的操作年度
-    filter_year = fiscal_year or current_user.fiscal_year
-    if filter_year:
-        query = query.filter(models.Project.fiscal_year == filter_year)
+    query = project_scope(db.query(models.Project).filter(models.Project.is_deleted == False), current_user, exporting=True)
+    query = query.filter(models.Project.fiscal_year == explicit_year(db, fiscal_year))
 
     projects = query.all()
 
@@ -2423,11 +2413,11 @@ async def export_projects(
                 p.order_date.strftime("%Y-%m-%d") if p.order_date else "",
                 p.leader.real_name if p.leader else "", members,
                 p.project_status, p.project_phase, p.priority, p.scale or "", p.business_source or "",
-                p.contract_amount, p.invoiced_amount,
-                p.invoice_date.strftime("%Y-%m-%d") if p.invoice_date else "",
-                p.received_amount,
-                p.receive_date.strftime("%Y-%m-%d") if p.receive_date else "",
-                p.uninvoiced_amount, p.unreceived_amount,
+                p.contract_amount if can_read_money(current_user, p) else None, p.invoiced_amount if can_read_money(current_user, p) else None,
+                p.invoice_date.strftime("%Y-%m-%d") if p.invoice_date and can_read_money(current_user, p) else "",
+                p.received_amount if can_read_money(current_user, p) else None,
+                p.receive_date.strftime("%Y-%m-%d") if p.receive_date and can_read_money(current_user, p) else "",
+                p.uninvoiced_amount if can_read_money(current_user, p) else None, p.unreceived_amount if can_read_money(current_user, p) else None,
                 p.signer1.name if p.signer1 else "",
                 p.signer1.user.username if p.signer1 and p.signer1.user else "",
                 p.signer2.name if p.signer2 else "",
@@ -2458,7 +2448,7 @@ STATIC_DIR = Path(os.getenv("FIRM_MANAGER_STATIC_DIR", Path(__file__).resolve().
 
 # favicon.ico 专门处理（必须在 catch-all 之前）
 @app.get("/favicon.ico", include_in_schema=False)
-async def favicon():
+def favicon():
     """Serve favicon"""
     favicon_path = STATIC_DIR / "favicon.ico"
     if os.path.exists(favicon_path):
@@ -2478,7 +2468,7 @@ app.mount("/branding", StaticFiles(directory=str(STATIC_DIR / "branding")), name
 # SPA 路由支持：所有非 API 路径都返回 index.html（由前端 React Router 处理）
 # 注意：此路由必须在 assets mount 之后注册，否则 assets 请求会被拦截
 @app.get("/{path:path}", include_in_schema=False)
-async def serve_spa(path: str):
+def serve_spa(path: str):
     """Catch-all route for Single Page Application routing"""
     if path == "api" or path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API 不存在")

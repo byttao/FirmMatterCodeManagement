@@ -65,7 +65,7 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold">数据看板</h1>
           <p className="text-muted-foreground">欢迎回来，{user ? getUserDisplayName(user) : ''}</p>
         </div>
-        {user?.role !== 'practitioner' && (
+        {user?.permissions.some(p => p.startsWith('project.export.')) && (
           <Button onClick={handleExport}>
             <Download className="w-4 h-4 mr-2" />
             导出Excel
@@ -184,7 +184,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        {user?.role === 'admin' && (
+        {user?.permissions.includes('identity.manage') && (
           <Card className="cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => navigate('/users')}>
             <CardContent className="pt-6">
               <div className="text-center">
@@ -198,7 +198,7 @@ export default function Dashboard() {
           </Card>
         )}
 
-        {(user?.role === 'admin' || user?.role === 'practitioner') && (
+        {user?.permissions.some(p => p.startsWith('project.create.')) && (
           <Card
             className="cursor-pointer hover:bg-accent/50 transition-colors"
             onClick={() => navigate('/projects/new')}

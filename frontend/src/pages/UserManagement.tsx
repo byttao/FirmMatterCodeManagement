@@ -3,7 +3,7 @@ import { userApi } from '@/api/auth'
 import { useAuth } from '@/store/AuthContext'
 import { Navigate } from 'react-router-dom'
 import type { User } from '@/types'
-import { ROLE_LABELS, getUserDisplayName } from '@/types'
+import { ROLE_LABELS, getUserDisplayName, can } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -15,14 +15,11 @@ import {
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select'
 import { Plus, Edit, Trash2, Loader2, RotateCcw, Search, X } from 'lucide-react'
 
 export default function UserManagement() {
   const { user } = useAuth()
-  const canManage = user?.role === 'admin'
+  const canManage = can(user, 'identity.manage')
 
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
@@ -39,7 +36,9 @@ export default function UserManagement() {
     phone: '',
     password: '',
     real_name: '',
-    role: 'practitioner',
+    roles: ['practitioner'],
+    is_practitioner: true,
+    special_grants: [] as string[],
   })
 
   useEffect(() => {
@@ -64,13 +63,13 @@ export default function UserManagement() {
 
   const openCreateDialog = () => {
     setEditingUser(null)
-    setFormData({ username: '', phone: '', password: '', real_name: '', role: 'practitioner' })
+    setFormData({ username: '', phone: '', password: '', real_name: '', roles: ['practitioner'], is_practitioner: true, special_grants: [] })
     setShowDialog(true)
   }
 
   const openEditDialog = (user: User) => {
     setEditingUser(user)
-    setFormData({ username: user.username, phone: user.phone || '', password: '', real_name: user.real_name, role: user.role })
+    setFormData({ username: user.username, phone: user.phone || '', password: '', real_name: user.real_name, roles: user.roles, is_practitioner: user.is_practitioner, special_grants: user.special_grants })
     setShowDialog(true)
   }
 
@@ -83,7 +82,10 @@ export default function UserManagement() {
         await userApi.update(editingUser.id, {
           real_name: formData.real_name,
           phone: formData.phone || null,
-          role: formData.role,
+          roles: formData.roles,
+          is_practitioner: formData.is_practitioner,
+          special_grants: formData.special_grants,
+          expected_revision: editingUser.permission_revision,
           ...(formData.password ? { password: formData.password } : {}),
         })
       } else {
@@ -114,7 +116,7 @@ export default function UserManagement() {
 
   const handleRestore = async (user: User) => {
     try {
-      await userApi.update(user.id, { is_active: true })
+      await userApi.update(user.id, { is_active: true, expected_revision: user.permission_revision })
       loadUsers()
     } catch (err: any) {
       alert(err.response?.data?.detail || '恢复失败')
@@ -209,7 +211,7 @@ export default function UserManagement() {
                   <TableCell>{u.real_name}</TableCell>
                   <TableCell>{u.phone || '-'}</TableCell>
                   <TableCell>
-                    <Badge variant="outline">{ROLE_LABELS[u.role] || u.role}</Badge>
+                    <div className="flex flex-wrap gap-1">{u.is_practitioner && <Badge>专业身份</Badge>}{u.roles.map(role => <Badge key={role} variant="outline">{ROLE_LABELS[role]}</Badge>)}</div>
                   </TableCell>
                   <TableCell>
                     <Badge variant={u.is_active ? 'success' : 'destructive'}>
@@ -300,20 +302,11 @@ export default function UserManagement() {
               />
             </div>
             <div className="space-y-2">
-              <Label>角色</Label>
-              <Select
-                value={formData.role}
-                onValueChange={(v) => setFormData(prev => ({ ...prev, role: v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="admin">管理人员</SelectItem>
-                  <SelectItem value="practitioner">执业人员</SelectItem>
-                  <SelectItem value="admin_staff">后勤行政</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label className="flex items-center gap-3">专业身份<Switch checked={formData.is_practitioner} onCheckedChange={checked => setFormData(prev => ({...prev, is_practitioner: checked, roles: checked ? prev.roles : prev.roles.filter(r => r !== 'practitioner')}))} /></Label>
+              <Label>管理权限与执业角色</Label>
+              <div className="grid grid-cols-2 gap-2">{Object.entries(ROLE_LABELS).map(([code, label]) => <label key={code} className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={code === 'practitioner' && !formData.is_practitioner} checked={formData.roles.includes(code)} onChange={e => setFormData(prev => ({...prev, roles: e.target.checked ? [...prev.roles, code] : prev.roles.filter(r => r !== code)}))} />{label}</label>)}</div>
+              <Label>额外导出授权</Label>
+              {[['project.export.related', '本人范围项目导出'], ['billing.export_sensitive', '银行与联系资料导出']].map(([code, label]) => <label key={code} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={formData.special_grants.includes(code)} onChange={e => setFormData(prev => ({...prev, special_grants: e.target.checked ? [...prev.special_grants, code] : prev.special_grants.filter(p => p !== code)}))} />{label}</label>)}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowDialog(false)}>

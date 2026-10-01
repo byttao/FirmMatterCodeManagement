@@ -6,7 +6,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amount: number | null | undefined): string {
-  if (amount === null || amount === undefined || isNaN(amount)) return '¥0.00'
+  if (amount === null || amount === undefined || isNaN(amount)) return '未登记 / 无权限查看'
   return new Intl.NumberFormat('zh-CN', {
     style: 'currency',
     currency: 'CNY',

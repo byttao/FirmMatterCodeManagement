@@ -1,12 +1,16 @@
 // 用户类型
-export type UserRole = 'admin' | 'practitioner' | 'admin_staff'
+export type UserRole = 'office_admin' | 'number_manager' | 'finance' | 'practitioner' | 'clerk'
 
 export interface User {
   id: number
   username: string
   phone: string | null
   real_name: string
-  role: UserRole
+  roles: UserRole[]
+  permissions: string[]
+  special_grants: string[]
+  is_practitioner: boolean
+  permission_revision: number
   fiscal_year: number
   is_active: boolean
   created_at: string
@@ -17,7 +21,7 @@ export interface Practitioner {
   username: string
   phone?: string | null
   real_name: string
-  role: string
+  is_practitioner: boolean
   is_active?: boolean
 }
 
@@ -42,7 +46,7 @@ export const getSignerDisplayName = (signer: Signer) =>
   signer.user ? `${signer.name} (${signer.user.username})` : `${signer.name} (待关联)`
 
 export const isSignerEligible = (signer: Signer) =>
-  !!signer.user_id && !!signer.user?.is_active && signer.user.role === 'practitioner' && signer.is_active
+  !!signer.user_id && !!signer.user?.is_active && signer.user.is_practitioner && signer.is_active
 
 export interface LoginRequest {
   username: string
@@ -59,8 +63,12 @@ export interface BrandingSettings {
 
 export interface Customer {
   id: number
-  tax_id: string
+  tax_id: string | null
   name: string
+  type: 'enterprise' | 'individual' | 'overseas'
+  identity_status: string
+  revision: number
+  merged_into_id: number | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -84,37 +92,39 @@ export type ReportStatus = 'pending' | 'assigned' | 'recycled'
 export interface ProjectMember {
   id: number
   user_id: number
-  user?: User
+  user?: Practitioner
 }
 
 export interface Project {
   id: number
   project_id: string
   fiscal_year: number
+  revision: number
   firm: string
   report_type: string
   report_year: number
   report_no: string | null
   report_no_status: ReportStatus
   customer_name: string
+  customer_id: number
   customer_tax_id: string | null
   contract_no: string | null
   order_date: string | null
   leader_id: number
-  leader?: User
+  leader?: Practitioner
   members: ProjectMember[]
   project_status: string
   project_phase: string
   priority: string
   scale: string | null
   business_source: string | null
-  contract_amount: number
-  invoiced_amount: number
+  contract_amount: number | null
+  invoiced_amount: number | null
   invoice_date: string | null
-  received_amount: number
+  received_amount: number | null
   receive_date: string | null
-  uninvoiced_amount: number
-  unreceived_amount: number
+  uninvoiced_amount: number | null
+  unreceived_amount: number | null
   signer1_id: number | null
   signer2_id: number | null
   signer1: Signer | null
@@ -125,6 +135,7 @@ export interface Project {
 }
 
 export interface ProjectCreate {
+  fiscal_year: number
   firm: string
   report_type: string
   report_year: number
@@ -140,12 +151,14 @@ export interface ProjectCreate {
   priority?: string
   scale?: string
   business_source?: string
-  contract_amount?: number
+  contract_amount?: number | null
   signer1_id?: number | null
   signer2_id?: number | null
 }
 
 export interface ProjectUpdate {
+  expected_revision: number
+  reason?: string
   firm?: string
   report_type?: string
   report_year?: number
@@ -161,7 +174,7 @@ export interface ProjectUpdate {
   priority?: string
   scale?: string
   business_source?: string
-  contract_amount?: number
+  contract_amount?: number | null
   signer1_id?: number | null
   signer2_id?: number | null
 }
@@ -209,11 +222,11 @@ export interface DashboardStats {
   paused_projects: number
   cancelled_projects: number
   this_month_new: number
-  total_contract_amount: number
-  total_invoiced_amount: number
-  total_received_amount: number
-  total_uninvoiced: number
-  total_unreceived: number
+  total_contract_amount: number | null
+  total_invoiced_amount: number | null
+  total_received_amount: number | null
+  total_uninvoiced: number | null
+  total_unreceived: number | null
 }
 
 // 项目状态字典。事务所和业务类型由首次安装及年度配置维护。
@@ -229,10 +242,14 @@ export const REPORT_STATUS_LABELS: Record<string, string> = {
   recycled: '已回收',
 }
 export const ROLE_LABELS: Record<string, string> = {
-  admin: '管理人员',
+  office_admin: '事务所管理员',
+  number_manager: '编号管理员',
+  finance: '财务后勤',
   practitioner: '执业人员',
-  admin_staff: '后勤行政',
+  clerk: '普通行政',
 }
+
+export const can = (user: User | null | undefined, permission: string) => !!user?.permissions.includes(permission)
 
 // 用户显示名称（姓名+用户名，用于区分重名）
 export const getUserDisplayName = (user: { real_name: string; username: string }) => {

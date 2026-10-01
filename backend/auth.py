@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from database import get_db
 import models
+from permissions import has, is_related
 ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8小时
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -37,6 +38,7 @@ def get_current_user(
     if not user or not user.is_active or user.session_version != session.session_version:
         raise HTTPException(401, "登录已失效，请重新登录")
     check_csrf(request, session)
+    db.info["request_id"] = getattr(request.state, "request_id", None)
     request.state.auth_session = session
     return user
 
@@ -62,7 +64,7 @@ def get_user_fiscal_year(user: models.User) -> int:
 def require_role(allowed_roles: list):
     """权限装饰器工厂"""
     def role_checker(current_user: models.User = Depends(get_current_user)):
-        if current_user.role not in allowed_roles:
+        if not set(current_user.roles).intersection(allowed_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="您没有权限执行此操作"
@@ -73,16 +75,7 @@ def require_role(allowed_roles: list):
 
 # 权限检查函数（用于在业务逻辑中调用）
 def can_edit_project(user: models.User, project: models.Project) -> bool:
-    """检查用户是否可以编辑项目"""
-    if user.role == models.UserRole.ADMIN.value:
-        return True
-    if user.role == models.UserRole.PRACTITIONER.value:
-        # 执业人员只能编辑自己负责的项目
-        return project.leader_id == user.id
-    if user.role == models.UserRole.ADMIN_STAFF.value:
-        # 后勤只能编辑财务字段
-        return False  # 财务字段通过专门的API编辑
-    return False
+    return has(user, "project.edit.all_basic") or (has(user, "project.edit.led") and project.leader_id == user.id)
 
 
 def can_delete_project(user: models.User, project: Optional[models.Project] = None) -> bool:
@@ -90,57 +83,40 @@ def can_delete_project(user: models.User, project: Optional[models.Project] = No
     - admin：可以删除
     - practitioner：只能删除未编号的项目（且必须是自己的项目）
     """
-    if user.role == models.UserRole.ADMIN.value:
-        return True
-    if user.role == models.UserRole.PRACTITIONER.value:
-        # 执业人员只能删除自己负责且未编号的项目
-        if project is None:
-            return False
-        return project.leader_id == user.id and not project.report_no
-    return False
+    if project is None:
+        return has(user, "number.void")
+    return not project.report_no and (has(user, "project.delete.all") or (has(user, "project.delete.led") and project.leader_id == user.id))
 
 
 def can_view_project(user: models.User, project: models.Project) -> bool:
-    """检查用户是否可以查看项目"""
-    if user.role in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]:
-        return True
-    if user.role == models.UserRole.PRACTITIONER.value:
-        # 执业人员：负责人、团队成员或签字人可查看
-        if project.leader_id == user.id:
-            return True
-        if ((project.signer1 and project.signer1.user_id == user.id) or
-                (project.signer2 and project.signer2.user_id == user.id)):
-            return True
-        member_ids = [m.user_id for m in project.members]
-        return user.id in member_ids
-    return False
+    return has(user, "project.read.all_basic") or has(user, "project.read.finance") or (has(user, "project.read.related") and is_related(user, project))
 
 
 def can_edit_financial_fields(user: models.User) -> bool:
     """检查用户是否可以编辑财务字段"""
-    return user.role in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]
+    return has(user, "finance.write")
 
 
 def can_generate_report_no(user: models.User) -> bool:
     """检查用户是否可以生成报告编号"""
-    return user.role in [models.UserRole.ADMIN.value, models.UserRole.PRACTITIONER.value]
+    return has(user, "number.issue.all") or has(user, "number.issue.led")
 
 
 def can_export(user: models.User) -> bool:
     """检查用户是否可以导出数据"""
-    return user.role in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]
+    return any(has(user, p) for p in ("project.export.all", "project.export.finance", "project.export.related"))
 
 
 def can_manage_users(user: models.User) -> bool:
     """检查用户是否可以管理用户"""
-    return user.role == models.UserRole.ADMIN.value
+    return has(user, "identity.manage")
 
 
 def can_manage_fiscal_config(user: models.User) -> bool:
     """检查用户是否可以管理编号年度配置"""
-    return user.role in [models.UserRole.ADMIN.value, models.UserRole.ADMIN_STAFF.value]
+    return has(user, "number.configure")
 
 
 def can_create_project(user: models.User) -> bool:
     """检查用户是否可以创建项目"""
-    return user.role in [models.UserRole.ADMIN.value, models.UserRole.PRACTITIONER.value]
+    return has(user, "project.create.assign") or (user.is_practitioner and has(user, "project.create.self"))

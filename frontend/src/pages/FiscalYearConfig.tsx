@@ -298,7 +298,7 @@ export default function FiscalYearConfigPage() {
     ruleId: 0
   })
 
-  const canManage = user?.role === 'admin' || user?.role === 'admin_staff'
+  const canManage = !!user?.permissions.includes('number.configure')
 
   useEffect(() => {
     loadData()

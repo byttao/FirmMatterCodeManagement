@@ -69,7 +69,8 @@ jobs:
           $existing = gh release view $tag --json isDraft --jq .isDraft 2>$null
           if ($LASTEXITCODE -eq 0 -and $existing -eq 'false') { throw '正式Release已存在，不覆盖附件' }
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --verify-tag --draft --title "$tag 加固会话与项目更新权限" --notes-file "docs/releases/$tag.md"
+            $title = (Get-Content "docs/releases/$tag.md" -Encoding utf8 -TotalCount 1).TrimStart('#').Trim()
+            gh release create $tag --verify-tag --draft --title $title --notes-file "docs/releases/$tag.md"
             if ($LASTEXITCODE -ne 0) { throw '创建Release草稿失败' }
           }
           gh release upload $tag build/windows-release/FirmMatterCodeManagement-win-x64.zip build/windows-release/SHA256SUMS.txt --clobber

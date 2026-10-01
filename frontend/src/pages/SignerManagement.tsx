@@ -46,8 +46,8 @@ export default function SignerManagement() {
   })
 
   // 检查权限：只有管理人员和后勤行政可以访问
-  const canManage = user?.role === 'admin' || user?.role === 'admin_staff'
-  const canDelete = user?.role === 'admin'  // 只有管理员可以删除
+  const canManage = !!user?.permissions.includes('signer.manage')
+  const canDelete = !!user?.permissions.includes('signer.delete')
 
   useEffect(() => {
     if (!canManage) {
@@ -318,7 +318,7 @@ export default function SignerManagement() {
                     <TableCell>{getSignerDisplayName(signer)}</TableCell>
                     <TableCell>
                       <Badge variant={!signer.user_id ? 'outline' : isSignerEligible(signer) ? 'default' : 'secondary'}>
-                        {!signer.user_id ? '待关联' : !signer.is_active ? '禁用' : !signer.user?.is_active || signer.user.role !== 'practitioner' ? '账号不可用' : '启用'}
+                        {!signer.user_id ? '待关联' : !signer.is_active ? '禁用' : !signer.user?.is_active || !signer.user.is_practitioner ? '账号不可用' : '启用'}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">

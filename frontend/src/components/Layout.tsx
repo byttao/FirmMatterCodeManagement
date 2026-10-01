@@ -1,9 +1,9 @@
 import { useNavigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/store/AuthContext'
 import { useDirty } from '@/context/DirtyContext'
-import { brandingApi, licenseApi, userApi } from '@/api/auth'
+import { brandingApi, licenseApi } from '@/api/auth'
 import { numberedYearOptionsApi } from '@/api/fiscalYearConfig'
-import { ROLE_LABELS, getUserDisplayName } from '@/types'
+import { ROLE_LABELS, getUserDisplayName, can } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LayoutDashboard, Briefcase, Users, LogOut, Menu, X, Calendar, PenLine, Settings, ShieldCheck, Building2 } from 'lucide-react'
@@ -59,7 +59,6 @@ export default function Layout() {
     }
     try {
       // 调用 API 设置年度，后端会返回包含新年度的 token
-      await userApi.setFiscalYear(year)
       // 更新本地 token（这样后续请求会使用新的 fiscal_year）
       setFiscalYear(year)
       // 跳转到项目列表
@@ -79,21 +78,21 @@ export default function Layout() {
   const navItems = [
     { path: '/account', label: '账号安全', icon: ShieldCheck, show: true },
     { path: '/', label: '数据看板', icon: LayoutDashboard, show: true },
-    { path: '/customers', label: '客户管理', icon: Building2, show: user?.role === 'admin' },
+    { path: '/customers', label: '客户管理', icon: Building2, show: can(user, 'customer.lookup') },
     { path: '/projects', label: '项目管理', icon: Briefcase, show: canUse('project_management') },
-    { path: '/users', label: '用户管理', icon: Users, show: user?.role === 'admin' && canUse('user_management') },
-    { path: '/signers', label: '签字人管理', icon: PenLine, show: (user?.role === 'admin' || user?.role === 'admin_staff') && canUse('signatory_review') },
-    { path: '/fiscal-year-configs', label: '编号年度配置', icon: Settings, show: (user?.role === 'admin' || user?.role === 'admin_staff') && canUse('fiscal_year_settings') },
-    { path: '/license', label: '授权与品牌', icon: ShieldCheck, show: user?.role === 'admin' },
-    { path: '/signed-projects', label: '我签字的项目', icon: PenLine, show: user?.role === 'practitioner' && canUse('signatory_review') },
+    { path: '/users', label: '用户管理', icon: Users, show: can(user, 'identity.manage') && canUse('user_management') },
+    { path: '/signers', label: '签字人管理', icon: PenLine, show: can(user, 'signer.manage') && canUse('signatory_review') },
+    { path: '/fiscal-year-configs', label: '编号年度配置', icon: Settings, show: can(user, 'number.configure') && canUse('fiscal_year_settings') },
+    { path: '/license', label: '授权与品牌', icon: ShieldCheck, show: can(user, 'license.manage') },
+    { path: '/signed-projects', label: '我签字的项目', icon: PenLine, show: user?.is_practitioner && canUse('signatory_review') },
   ].filter(item => item.show)
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* 顶部导航 */}
       <header className="bg-white border-b sticky top-0 z-50">
-        <div className="flex items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-3 min-w-0">
             <Button
               variant="ghost"
               size="icon"
@@ -110,7 +109,7 @@ export default function Layout() {
             {branding.short_name && <span className="text-sm font-medium text-muted-foreground">{branding.short_name}</span>}
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3 min-w-0">
             {/* 年度切换器 */}
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-muted-foreground" />
@@ -129,9 +128,9 @@ export default function Layout() {
               </Select>
             </div>
 
-            <div className="text-right">
+            <div className="text-right max-w-[240px] break-words">
               <p className="text-sm font-medium">{user ? getUserDisplayName(user) : ''}</p>
-              <p className="text-xs text-muted-foreground">{ROLE_LABELS[user?.role || '']}</p>
+              <p className="text-xs text-muted-foreground">{user?.roles.map(role => ROLE_LABELS[role]).join('、')}</p>
             </div>
             <Button variant="outline" size="sm" onClick={handleLogout}>
               <LogOut className="w-4 h-4 mr-2" />

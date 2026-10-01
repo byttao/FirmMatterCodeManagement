@@ -63,16 +63,16 @@ export default function ProjectList() {
   const navigate = useNavigate()
   const { user, fiscalYear } = useAuth()
 
-  const canCreateProject = user?.role !== 'admin_staff'
-  const canRecycleNo = user?.role === 'admin'
+  const canCreateProject = user?.permissions.some(p => ['project.create.assign', 'project.create.self'].includes(p))
+  const canRecycleNo = user?.permissions.includes('number.void')
 
   // 判断用户是否可以删除某个项目
   const canDeleteThisProject = (project: Project) => {
-    if (user?.role === 'admin') {
-      return true
+    if (user?.permissions.includes('project.delete.all')) {
+      return !project.report_no
     }
     // 执业人员：只能删除自己负责且未编号的项目
-    if (user?.role === 'practitioner') {
+    if (user?.permissions.includes('project.delete.led')) {
       return project.leader_id === user.id && !project.report_no
     }
     return false
@@ -185,7 +185,7 @@ export default function ProjectList() {
     if (!deleteProject) return
     setDeleting(true)
     try {
-      await projectApi.delete(deleteProject.id)
+      await projectApi.delete(deleteProject.id, deleteProject.revision)
       loadProjects()
       setDeleteProject(null)
     } catch (err: any) {
@@ -197,7 +197,9 @@ export default function ProjectList() {
 
   const handleRecycleNo = async (project: Project) => {
     try {
-      await projectApi.recycleReportNo(project.id)
+      const reason = window.prompt('编号作废原因')
+      if (!reason?.trim()) return
+      await projectApi.recycleReportNo(project.id, project.revision, reason)
       loadProjects()
     } catch (err: any) {
       alert(err.response?.data?.detail || '回收编号失败')
@@ -386,7 +388,7 @@ export default function ProjectList() {
                       >
                         <Eye className="w-4 h-4" />
                       </Button>
-                      {(user?.role === 'admin' || (user?.role === 'practitioner' && project.leader_id === user.id)) && (
+                      {(user?.permissions.includes('contract.write.all') || user?.permissions.includes('project.edit.all_basic') || (user?.permissions.includes('project.edit.led') && project.leader_id === user.id)) && (
                         <Button
                           variant="ghost"
                           size="icon"
@@ -459,7 +461,7 @@ export default function ProjectList() {
           <DialogHeader>
             <DialogTitle>确认删除</DialogTitle>
             <DialogDescription>
-              确定要删除项目「{deleteProject?.customer_name}」吗？删除后报告编号将回收。
+              确定要删除未编号草稿「{deleteProject?.customer_name}」吗？
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

@@ -18,16 +18,16 @@ export default function SignedProjects() {
 
   useEffect(() => setPage(1), [fiscalYear])
   useEffect(() => {
-    if (user?.role !== 'practitioner') return
+    if (!user?.is_practitioner) return
     setLoading(true)
     projectApi.signedByMe(page).then(response => {
       setItems(response.data.items)
       setTotal(response.data.total)
       setError('')
     }).catch(() => setError('签字项目加载失败')).finally(() => setLoading(false))
-  }, [page, fiscalYear, user?.role])
+  }, [page, fiscalYear, user?.is_practitioner])
 
-  if (user?.role !== 'practitioner') return <Navigate to="/projects" replace />
+  if (!user?.is_practitioner) return <Navigate to="/projects" replace />
 
   return (
     <div className="space-y-4">

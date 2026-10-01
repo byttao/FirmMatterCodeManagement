@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { MoneyInput } from '@/components/ui/money-input'
+import { useAuth } from '@/store/AuthContext'
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -25,6 +26,8 @@ interface Props {
 type Editor = { kind: FinanceKind; entry: FinancialEntry | null } | null
 
 export function FinancialLedger({ project, canEdit, onProjectChange }: Props) {
+  const { user } = useAuth()
+  const readEntries = !!user?.permissions.includes('finance.read.all')
   const [invoices, setInvoices] = useState<FinancialEntry[]>([])
   const [receipts, setReceipts] = useState<FinancialEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -42,11 +45,12 @@ export function FinancialLedger({ project, canEdit, onProjectChange }: Props) {
   }
 
   useEffect(() => {
+    if (!readEntries) {setInvoices([]); setReceipts([]); setLoading(false); return}
     load().catch(() => {
       setLoading(false)
       alert('财务记录加载失败')
     })
-  }, [project.id])
+  }, [project.id, readEntries])
 
   const openEditor = (kind: FinanceKind, entry: FinancialEntry | null = null) => {
     setForm({
@@ -99,7 +103,7 @@ export function FinancialLedger({ project, canEdit, onProjectChange }: Props) {
     }
   }
 
-  const sections: { kind: FinanceKind; title: string; entries: FinancialEntry[]; total: number }[] = [
+  const sections: { kind: FinanceKind; title: string; entries: FinancialEntry[]; total: number | null }[] = [
     { kind: 'invoices', title: '开票记录', entries: invoices, total: project.invoiced_amount },
     { kind: 'receipts', title: '收款记录', entries: receipts, total: project.received_amount },
   ]
@@ -114,7 +118,7 @@ export function FinancialLedger({ project, canEdit, onProjectChange }: Props) {
         <div><div className="text-muted-foreground">未收款</div><strong>{formatCurrency(project.unreceived_amount)}</strong></div>
       </div>
 
-      {sections.map(section => (
+      {readEntries && sections.map(section => (
         <section key={section.kind} className="space-y-2">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold">{section.title} <span className="font-normal text-muted-foreground">合计 {formatCurrency(section.total)}</span></h3>

@@ -3,7 +3,7 @@ from sqlalchemy import inspect, text
 from database import Base
 import models  # register tables
 
-SCHEMA_VERSION = 200
+SCHEMA_VERSION = 300
 
 
 def initialize_schema(engine):

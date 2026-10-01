@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import type { User, AuthState } from '@/types'
-import { userApi, authApi, csrfToken } from '@/api/auth'
+import { authApi, csrfToken } from '@/api/auth'
 
 interface AuthContextType extends AuthState {
   login: (token: string, user: User, fiscalYear?: number) => void
@@ -56,7 +56,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const updateFiscalYear = async (year: number) => {
     try {
-      await userApi.setFiscalYear(year)
       sessionStorage.setItem('fiscalYear', year.toString())
       setFiscalYearState(year)
     } catch (error) {

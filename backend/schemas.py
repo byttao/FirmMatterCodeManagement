@@ -18,12 +18,13 @@ class UserBase(InputModel):
     username: constr(max_length=50)
     phone: Optional[constr(max_length=30)] = None
     real_name: constr(max_length=100)
-    role: str
+    roles: List[Literal['office_admin', 'number_manager', 'finance', 'practitioner', 'clerk']]
+    is_practitioner: bool = False
+    special_grants: List[Literal['project.export.related', 'billing.export_sensitive']] = []
 
 
 class UserCreate(UserBase):
     username: constr(regex=r"^[A-Za-z0-9_.-]{3,50}$")
-    role: Literal["admin", "practitioner", "admin_staff"]
     password: constr(min_length=12, max_length=72)
 
 
@@ -32,6 +33,8 @@ class UserResponse(UserBase):
     fiscal_year: int
     is_active: bool
     created_at: datetime
+    permissions: List[str]
+    permission_revision: int
 
     class Config:
         orm_mode = True
@@ -40,7 +43,10 @@ class UserResponse(UserBase):
 class UserUpdate(InputModel):
     real_name: Optional[constr(max_length=100)] = None
     phone: Optional[constr(max_length=30)] = None
-    role: Optional[Literal["admin", "practitioner", "admin_staff"]] = None
+    roles: Optional[List[Literal['office_admin', 'number_manager', 'finance', 'practitioner', 'clerk']]] = None
+    is_practitioner: Optional[bool] = None
+    special_grants: Optional[List[Literal['project.export.related', 'billing.export_sensitive']]] = None
+    expected_revision: int
     password: Optional[constr(min_length=12, max_length=72)] = None
     is_active: Optional[bool] = None
 
@@ -49,9 +55,8 @@ class PractitionerResponse(InputModel):
     """执业人员简单信息（用于项目表单选择）"""
     id: int
     username: str
-    phone: Optional[str] = None
     real_name: str
-    role: str
+    is_practitioner: bool
     is_active: bool
 
     class Config:
@@ -120,18 +125,27 @@ class OtpLogin(InputModel):
 
 
 class CustomerCreate(InputModel):
-    tax_id: constr(min_length=1, max_length=50)
+    tax_id: Optional[constr(max_length=50)] = None
     name: constr(min_length=1, max_length=200)
+    type: Literal['enterprise', 'individual', 'overseas'] = 'enterprise'
 
 
 class CustomerUpdate(InputModel):
-    name: constr(min_length=1, max_length=200)
+    expected_revision: int
+    name: Optional[constr(min_length=1, max_length=200)] = None
+    tax_id: Optional[constr(max_length=50)] = None
+    is_active: Optional[bool] = None
+    reason: Optional[constr(min_length=1, max_length=500)] = None
 
 
 class CustomerResponse(InputModel):
     id: int
-    tax_id: str
+    tax_id: Optional[str]
     name: str
+    type: str
+    identity_status: str
+    revision: int
+    merged_into_id: Optional[int]
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -191,7 +205,7 @@ class ProjectMemberCreate(ProjectMemberBase):
 class ProjectMemberResponse(InputModel):
     id: int
     user_id: int
-    user: Optional[UserResponse] = None
+    user: Optional[PractitionerResponse] = None
 
     class Config:
         orm_mode = True
@@ -206,12 +220,12 @@ class ProjectBase(InputModel):
     customer_id: Optional[int] = None
     contract_no: Optional[constr(max_length=100)] = None
     order_date: Optional[datetime] = None
-    project_status: str = "进行中"
-    project_phase: str = "签约"
-    priority: str = "中"
-    scale: Optional[str] = None
-    business_source: Optional[str] = None
-    contract_amount: float = 0
+    project_status: Literal['进行中', '已完成', '已暂停', '已取消'] = "进行中"
+    project_phase: Literal['签约', '进场', '实施中', '报告出具', '归档'] = "签约"
+    priority: Literal['高', '中', '低'] = "中"
+    scale: Optional[constr(max_length=50)] = None
+    business_source: Optional[constr(max_length=50)] = None
+    contract_amount: Optional[condecimal(ge=0, max_digits=12, decimal_places=2)] = None
     signer1_id: Optional[int] = None
     signer2_id: Optional[int] = None
 
@@ -220,6 +234,7 @@ class ProjectBase(InputModel):
 
 
 class ProjectCreate(ProjectBase):
+    fiscal_year: int
     leader_id: int
     member_ids: Optional[List[int]] = []
 
@@ -228,6 +243,8 @@ class ProjectCreate(ProjectBase):
 
 
 class ProjectUpdate(InputModel):
+    expected_revision: Optional[int] = None
+    reason: Optional[constr(min_length=1, max_length=500)] = None
     firm: Optional[constr(min_length=1, max_length=100)] = None
     report_type: Optional[constr(min_length=1, max_length=100)] = None
     report_year: Optional[int] = None
@@ -237,12 +254,12 @@ class ProjectUpdate(InputModel):
     contract_no: Optional[constr(max_length=100)] = None
     order_date: Optional[datetime] = None
     leader_id: Optional[int] = None
-    project_status: Optional[str] = None
-    project_phase: Optional[str] = None
-    priority: Optional[str] = None
-    scale: Optional[str] = None
-    business_source: Optional[str] = None
-    contract_amount: Optional[float] = None
+    project_status: Optional[Literal['进行中', '已完成', '已暂停', '已取消']] = None
+    project_phase: Optional[Literal['签约', '进场', '实施中', '报告出具', '归档']] = None
+    priority: Optional[Literal['高', '中', '低']] = None
+    scale: Optional[constr(max_length=50)] = None
+    business_source: Optional[constr(max_length=50)] = None
+    contract_amount: Optional[condecimal(ge=0, max_digits=12, decimal_places=2)] = None
     signer1_id: Optional[int] = None
     signer2_id: Optional[int] = None
     member_ids: Optional[List[int]] = None
@@ -255,19 +272,20 @@ class ProjectResponse(ProjectBase):
     id: int
     project_id: str
     fiscal_year: int  # 编号年度
+    revision: int
     report_no: Optional[str] = None
     report_no_status: str
     leader_id: int
-    leader: Optional[UserResponse] = None
+    leader: Optional[PractitionerResponse] = None
     members: List[ProjectMemberResponse] = []
     signer1: Optional[SignerResponse] = None
     signer2: Optional[SignerResponse] = None
-    invoiced_amount: float = 0
+    invoiced_amount: Optional[float] = None
     invoice_date: Optional[datetime] = None
-    received_amount: float = 0
+    received_amount: Optional[float] = None
     receive_date: Optional[datetime] = None
-    uninvoiced_amount: float = 0
-    unreceived_amount: float = 0
+    uninvoiced_amount: Optional[float] = None
+    unreceived_amount: Optional[float] = None
     is_deleted: bool = False
     created_at: datetime
     updated_at: datetime
@@ -333,11 +351,11 @@ class DashboardStats(InputModel):
     paused_projects: int
     cancelled_projects: int
     this_month_new: int
-    total_contract_amount: float
-    total_invoiced_amount: float
-    total_received_amount: float
-    total_uninvoiced: float
-    total_unreceived: float
+    total_contract_amount: Optional[float]
+    total_invoiced_amount: Optional[float]
+    total_received_amount: Optional[float]
+    total_uninvoiced: Optional[float]
+    total_unreceived: Optional[float]
 
 
 # ============ 编号生成 ============
@@ -349,6 +367,14 @@ class GenerateReportNoRequest(InputModel):
 # ============ 编号回收 ============
 class RecycleReportNoRequest(InputModel):
     project_id: int
+
+
+class RevisionRequest(InputModel):
+    expected_revision: int
+
+
+class ReasonRequest(RevisionRequest):
+    reason: constr(min_length=1, max_length=500)
 
 
 # ============ 新版编号年度配置（三级管理） ============

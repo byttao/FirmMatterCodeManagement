@@ -24,8 +24,6 @@ def refresh_project_finance(db: Session, project: models.Project) -> None:
     project.received_amount = receipt_cents / 100
     project.invoice_date = max((entry.occurred_on for entry in invoices if entry.occurred_on), default=None)
     project.receive_date = max((entry.occurred_on for entry in receipts if entry.occurred_on), default=None)
-    project.uninvoiced_amount = (cents(project.contract_amount) - invoice_cents) / 100
-    project.unreceived_amount = (invoice_cents - receipt_cents) / 100
 
 
 def migrate_legacy_finance(db: Session | None = None) -> None:

@@ -81,7 +81,7 @@ def active_user_count() -> int:
     try:
         return db.query(models.User).filter_by(
             is_active=True,
-            role=models.UserRole.PRACTITIONER.value,
+            is_practitioner=True,
         ).count()
     finally:
         db.close()

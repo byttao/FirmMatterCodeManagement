@@ -1,14 +1,17 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Date, Boolean, ForeignKey, Text, Enum, Index, CheckConstraint
 from sqlalchemy.orm import relationship
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.sql import func
 import enum
 from database import Base
 
 
 class UserRole(str, enum.Enum):
-    ADMIN = "admin"           # 管理人员
+    ADMIN = "office_admin"
+    NUMBER_MANAGER = "number_manager"
+    FINANCE = "finance"
     PRACTITIONER = "practitioner"  # 执业人员
-    ADMIN_STAFF = "admin_staff"     # 后勤行政
+    CLERK = "clerk"
 
 
 class ReportStatus(str, enum.Enum):
@@ -40,7 +43,8 @@ class User(Base):
     phone = Column(String(30), unique=True, index=True, nullable=True)
     hashed_password = Column(String(255), nullable=False)
     real_name = Column(String(100), nullable=False)
-    role = Column(String(20), nullable=False, default=UserRole.PRACTITIONER.value)
+    is_practitioner = Column(Boolean, nullable=False, default=False)
+    permission_revision = Column(Integer, nullable=False, default=1)
     fiscal_year = Column(Integer, nullable=False)  # 当前操作年度
     is_active = Column(Boolean, default=True)
     session_version = Column(Integer, nullable=False, default=1)
@@ -51,6 +55,35 @@ class User(Base):
     led_projects = relationship("Project", back_populates="leader", foreign_keys="Project.leader_id")
     # 关联：作为团队成员参与的项目
     team_projects = relationship("ProjectMember", back_populates="user")
+    role_records = relationship("UserRoleRecord", cascade="all, delete-orphan", lazy="selectin")
+    special_grant_records = relationship("UserSpecialGrant", cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def roles(self):
+        return sorted(record.role_code for record in self.role_records)
+
+    @property
+    def special_grants(self):
+        return sorted(record.permission_code for record in self.special_grant_records)
+
+    @property
+    def permissions(self):
+        from permissions import effective_permissions
+        return sorted(effective_permissions(self))
+
+
+class UserRoleRecord(Base):
+    __tablename__ = "user_roles"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    role_code = Column(String(32), primary_key=True)
+    __table_args__ = (CheckConstraint("role_code IN ('office_admin','number_manager','finance','practitioner','clerk')"),)
+
+
+class UserSpecialGrant(Base):
+    __tablename__ = "user_special_grants"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    permission_code = Column(String(64), primary_key=True)
+    __table_args__ = (CheckConstraint("permission_code IN ('project.export.related','billing.export_sensitive')"),)
 
 
 class Project(Base):
@@ -79,13 +112,11 @@ class Project(Base):
     scale = Column(String(50))  # 项目规模：会计准则/会计制度/小企业会计准则/民非/高校/社团组织
     business_source = Column(String(50))  # 业务来源
 
-    contract_amount = Column(Float, default=0)  # 合同金额
-    invoiced_amount = Column(Float, default=0)  # 开票金额
+    contract_amount_cents = Column(Integer, nullable=True)
+    invoiced_amount_cents = Column(Integer, nullable=False, default=0)
     invoice_date = Column(DateTime)  # 开票时间
-    received_amount = Column(Float, default=0)  # 收款金额
+    received_amount_cents = Column(Integer, nullable=False, default=0)
     receive_date = Column(DateTime)  # 收款时间
-    uninvoiced_amount = Column(Float, default=0)  # 未开票金额（计算）
-    unreceived_amount = Column(Float, default=0)  # 未收款金额（计算）
 
     signer1_id = Column(Integer, ForeignKey("signers.id"), nullable=True)  # 签字人一
     signer2_id = Column(Integer, ForeignKey("signers.id"), nullable=True)  # 签字人二
@@ -94,6 +125,7 @@ class Project(Base):
 
     is_deleted = Column(Boolean, default=False)  # 软删除
     fiscal_year = Column(Integer, nullable=False, index=True)  # 编号年度（创建时的操作年度）
+    revision = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -102,6 +134,45 @@ class Project(Base):
     financial_entries = relationship("FinancialEntry", back_populates="project", cascade="all, delete-orphan")
     report_number_history = relationship("ReportNumberHistory", back_populates="project")
     customer = relationship("Customer", back_populates="projects")
+
+    @hybrid_property
+    def contract_amount(self):
+        return self.contract_amount_cents / 100 if self.contract_amount_cents is not None else None
+
+    @contract_amount.setter
+    def contract_amount(self, value):
+        from finance import cents
+        self.contract_amount_cents = cents(value) if value is not None else None
+
+    @contract_amount.expression
+    def contract_amount(cls):
+        return cls.contract_amount_cents / 100
+
+    @property
+    def invoiced_amount(self):
+        return (self.invoiced_amount_cents or 0) / 100
+
+    @invoiced_amount.setter
+    def invoiced_amount(self, value):
+        from finance import cents
+        self.invoiced_amount_cents = cents(value)
+
+    @property
+    def received_amount(self):
+        return (self.received_amount_cents or 0) / 100
+
+    @received_amount.setter
+    def received_amount(self, value):
+        from finance import cents
+        self.received_amount_cents = cents(value)
+
+    @property
+    def uninvoiced_amount(self):
+        return (self.contract_amount_cents - (self.invoiced_amount_cents or 0)) / 100 if self.contract_amount_cents is not None else None
+
+    @property
+    def unreceived_amount(self):
+        return ((self.invoiced_amount_cents or 0) - (self.received_amount_cents or 0)) / 100
 
     @property
     def uninvoiced(self):
@@ -128,14 +199,23 @@ class Customer(Base):
     __tablename__ = "customers"
 
     id = Column(Integer, primary_key=True, index=True)
-    tax_id = Column(String(50), nullable=False, unique=True, index=True)
+    tax_id = Column(String(50), nullable=True, unique=True, index=True)
     name = Column(String(200), nullable=False)
+    type = Column(String(16), nullable=False, default="enterprise")
+    identity_status = Column(String(16), nullable=False, default="pending")
+    revision = Column(Integer, nullable=False, default=1)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    merged_into_id = Column(Integer, ForeignKey("customers.id"))
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     projects = relationship("Project", back_populates="customer")
     aliases = relationship("CustomerAlias", back_populates="customer", cascade="all, delete-orphan")
+    __table_args__ = (CheckConstraint("type IN ('enterprise','individual','overseas')"),
+                      CheckConstraint("identity_status IN ('pending','confirmed','merged')"),
+                      Index("idx_customer_name", "name", "id"))
 
 
 class CustomerAlias(Base):
@@ -150,6 +230,48 @@ class CustomerAlias(Base):
     customer = relationship("Customer", back_populates="aliases")
 
     __table_args__ = (Index("uq_customer_alias_name", "customer_id", "name", unique=True),)
+
+
+class CustomerChangeRequest(Base):
+    __tablename__ = "customer_change_requests"
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), index=True)
+    kind = Column(String(32), nullable=False)
+    status = Column(String(16), nullable=False, default="submitted", index=True)
+    proposal_json = Column(Text, nullable=False)
+    submitted_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reviewed_by = Column(Integer, ForeignKey("users.id"))
+    reason = Column(String(500))
+    revision = Column(Integer, nullable=False, default=1)
+    customer_revision = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())
+    reviewed_at = Column(DateTime)
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    id = Column(Integer, primary_key=True)
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action = Column(String(64), nullable=False)
+    target_type = Column(String(32), nullable=False)
+    target_id = Column(Integer, nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    customer_id = Column(Integer, ForeignKey("customers.id"))
+    request_id = Column(String(64))
+    reason = Column(String(500))
+    redacted_diff = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (Index("idx_audit_target_time", "target_type", "target_id", "created_at"),)
+
+
+class IdempotencyRecord(Base):
+    __tablename__ = "idempotency_records"
+    actor_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    operation = Column(String(100), primary_key=True)
+    key = Column(String(100), primary_key=True)
+    payload_hash = Column(String(64), nullable=False)
+    result_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class OtpChallenge(Base):

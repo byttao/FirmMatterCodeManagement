@@ -4,17 +4,24 @@ import type {
   Project, ProjectCreate, ProjectUpdate, ProjectListResponse,
   DashboardStats, User as UserType, Signer, SignerCreate, FinanceKind, FinancialEntry, FinancialEntryInput,
   ReportNumberHistory
-  , BrandingSettings, Customer
+  , BrandingSettings, Customer, Practitioner
 } from '@/types'
 
 const api = axios.create({
   baseURL: '/api',
 })
 
+export function requestKey() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
+}
+
 export const csrfToken = () => document.cookie.split('; ').find(value => value.startsWith('firm_csrf='))?.split('=')[1] || ''
 
 api.interceptors.request.use((config) => {
   config.headers['X-CSRF-Token'] = csrfToken()
+  if (['/projects', '/projects/signed-by-me', '/dashboard', '/export/projects'].includes(config.url || '') && (config.method || 'get') === 'get') {
+    config.params = { fiscal_year: Number(sessionStorage.getItem('fiscalYear')), ...config.params }
+  }
   return config
 })
 
@@ -24,9 +31,10 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.data?.detail?.message) error.response.data.detail = error.response.data.detail.message
     if (error.response?.status === 401) {
+      document.cookie = 'firm_csrf=; Max-Age=0; Path=/; SameSite=Lax'
       localStorage.removeItem('token')
       localStorage.removeItem('user')
-      window.location.href = '/login'
+      if (window.location.pathname !== '/login') window.location.href = '/login'
     }
     return Promise.reject(error)
   }
@@ -54,19 +62,24 @@ export const brandingApi = {
 }
 
 export const customerApi = {
-  list: (search?: string, include_disabled = false) => api.get<Customer[]>('/customers', { params: { search, include_disabled } }),
-  create: (data: { tax_id: string; name: string }) => api.post<Customer>('/customers', data),
-  update: (id: number, data: { name: string }) => api.put<Customer>(`/customers/${id}`, data),
+  list: (search?: string, page = 1, include_disabled = false) => api.get<{items: Customer[]; total: number}>('/customers', { params: { search, page, include_disabled } }),
+  lookup: (q: string, cursor = 0) => api.get<{items: {id: number; name: string; tax_id_masked: string | null; identity_status: string}[]; next_cursor: number | null}>('/customers/lookup', {params: {q, cursor}}),
+  match: (tax_id: string) => api.post('/customers/match', {tax_id}),
+  create: (data: { tax_id: string | null; name: string; type: Customer['type'] }) => api.post<Customer>('/customers', data),
+  update: (id: number, data: { name?: string; tax_id?: string | null; is_active?: boolean; expected_revision: number; reason?: string }) => api.patch<Customer>(`/customers/${id}`, data),
+  propose: (data: {kind: string; customer_id?: number; expected_customer_revision?: number; proposal: {name: string; tax_id: string | null; type: Customer['type']}; reason: string}) => api.post('/customer-change-requests', data),
+  requests: (page = 1) => api.get('/customer-change-requests', {params: {page}}),
+  review: (id: number, expected_revision: number, decision: string, reason: string) => api.post(`/customer-change-requests/${id}/review`, {expected_revision, decision, reason}),
 }
 
 // 用户管理 API
 export const userApi = {
   list: (include_disabled = false) => api.get<UserType[]>('/users', { params: { include_disabled } }),
-  listPractitioners: () => api.get<{ id: number; username: string; real_name: string; role: string }[]>('/users/practitioners'),
-  search: (q: string) => api.get<{ id: number; username: string; real_name: string; role: string }[]>('/users/search', { params: { q } }),
-  create: (data: { username: string; phone?: string; password: string; real_name: string; role: string }) =>
+  listPractitioners: () => api.get<Practitioner[]>('/users/practitioners'),
+  search: (q: string) => api.get<Practitioner[]>('/users/search', { params: { q } }),
+  create: (data: { username: string; phone?: string; password: string; real_name: string; roles: string[]; is_practitioner: boolean; special_grants: string[] }) =>
     api.post<UserType>('/users', data),
-  update: (id: number, data: Partial<{ real_name: string; phone: string | null; role: string; password: string; is_active: boolean }>) =>
+  update: (id: number, data: Partial<{ real_name: string; phone: string | null; roles: string[]; is_practitioner: boolean; special_grants: string[]; password: string; is_active: boolean }> & {expected_revision: number}) =>
     api.put<UserType>(`/users/${id}`, data),
   delete: (id: number) => api.delete(`/users/${id}`),
   getFiscalYear: () => api.get<{ fiscal_year: number }>('/users/current-fiscal-year'),
@@ -77,6 +90,7 @@ export const userApi = {
 export const projectApi = {
   list: (params?: {
     page?: number
+    fiscal_year?: number
     page_size?: number
     search?: string
     firm?: string
@@ -100,11 +114,11 @@ export const projectApi = {
 
   update: (id: string | number, data: ProjectUpdate) => api.put<Project>(`/projects/${id}`, data),
 
-  delete: (id: string | number) => api.delete(`/projects/${id}`),
+  delete: (id: string | number, expected_revision: number) => api.delete(`/projects/${id}`, {params: {expected_revision}}),
 
-  generateReportNo: (id: string | number) => api.post<{ report_no: string; message: string }>(`/projects/${id}/generate-report-no`),
+  generateReportNo: (id: string | number, expected_revision: number, key: string) => api.post<{ report_no: string; revision: number; message: string }>(`/projects/${id}/generate-report-no`, {expected_revision}, {headers: {'Idempotency-Key': key}}),
 
-  recycleReportNo: (id: string | number) => api.post<{ message: string }>(`/projects/${id}/recycle-report-no`),
+  recycleReportNo: (id: string | number, expected_revision: number, reason: string) => api.post<{ message: string }>(`/projects/${id}/void-report-no`, {expected_revision, reason}),
 }
 
 export const financeApi = {
