@@ -62,6 +62,9 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def tearDownClass(cls):
+        from runtime_log import logger
+        for handler in logger.handlers[:]:
+            handler.close();logger.removeHandler(handler)
         engine.dispose()
         TEST_DIR.cleanup()
 
