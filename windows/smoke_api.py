@@ -4,6 +4,9 @@ import sys
 import time
 import httpx
 
+# Windows CI 默认输出编码可能为 CP1252，中文结果统一使用 UTF-8。
+sys.stdout.reconfigure(encoding='utf-8')
+
 base=sys.argv[1]
 password='Smoke-'+secrets.token_hex(16)
 with httpx.Client(base_url=base,trust_env=False,timeout=30) as client:
