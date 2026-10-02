@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { errorText } from '@/lib/errors'
 import type {
   LoginRequest, LoginResponse, User,
   Project, ProjectCreate, ProjectUpdate, ProjectListResponse,
@@ -28,13 +29,18 @@ api.interceptors.request.use((config) => {
 // 响应拦截器：处理错误
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.data?.detail?.message) error.response.data.detail = error.response.data.detail.message
+  async (error) => {
+    let body = error.response?.data
+    if (body instanceof Blob) { try { body = JSON.parse(await body.text()) } catch { body = undefined } }
+    error.userMessage = errorText(error.response?.status || 0, body, error.response?.headers?.['x-request-id'])
+    error.message = error.userMessage
+    if (error.response) error.response.data = { detail: error.userMessage }
+
     if (error.response?.status === 401) {
       document.cookie = 'firm_csrf=; Max-Age=0; Path=/; SameSite=Lax'
       localStorage.removeItem('token')
       localStorage.removeItem('user')
-      if (window.location.pathname !== '/login') window.location.href = '/login'
+      if (window.location.pathname !== '/login') { sessionStorage.setItem('loginNotice', error.userMessage); window.location.href = '/login' }
     }
     return Promise.reject(error)
   }

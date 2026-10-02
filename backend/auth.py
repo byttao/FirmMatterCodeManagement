@@ -37,6 +37,7 @@ def get_current_user(
     user = db.get(models.User, session.user_id)
     if not user or not user.is_active or user.session_version != session.session_version:
         raise HTTPException(401, "登录已失效，请重新登录")
+    request.state.actor_id = user.id
     check_csrf(request, session)
     db.info["request_id"] = getattr(request.state, "request_id", None)
     request.state.auth_session = session

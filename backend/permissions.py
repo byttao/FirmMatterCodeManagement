@@ -12,7 +12,7 @@ ROLE_PERMISSIONS = {
         "customer.correct", "customer.propose", "billing.read.all", "billing.manage",
         "billing.verify", "billing.export_sensitive", "finance.read.all", "finance.write",
         "finance.void", "contract.write.all", "identity.manage", "license.manage",
-        "system.backup", "audit.read",
+        "system.backup", "audit.read", "diagnostics.read",
     },
     "number_manager": {
         "project.read.all_basic", "project.create.assign", "project.edit.all_basic",

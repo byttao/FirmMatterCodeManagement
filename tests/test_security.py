@@ -799,5 +799,77 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         old.dispose()
 
 
+    async def test_diagnostics_admin_can_trace_practitioner_denial(self):
+        import io, json, zipfile
+        await self.login("leader")
+        denied = await self.client.get('/api/users')
+        self.assertEqual(denied.status_code,403)
+        request_id = denied.json()['detail']['request_id']
+        self.assertEqual(denied.json()['detail']['category'],'access_restriction')
+        for username in ('leader','outsider','number','finance','clerk','combined'):
+            await self.login(username)
+            self.assertEqual((await self.client.get('/api/diagnostics/logs')).status_code,403)
+            self.assertEqual((await self.client.post('/api/diagnostics/export')).status_code,403)
+        await self.login('admin')
+        filters={'request_id':request_id,'actor_id':self.leader_id}
+        response=await self.client.get('/api/diagnostics/logs',params=filters)
+        rows=response.json()['items']
+        self.assertEqual(len(rows),1,response.text)
+        self.assertEqual(rows[0]['status_code'],403)
+        self.assertEqual(rows[0]['actor_id'],self.leader_id)
+        self.assertIn('timestamp',rows[0])
+        exported=await self.client.post('/api/diagnostics/export',params=filters)
+        self.assertEqual(exported.status_code,200,exported.text if exported.status_code!=200 else '')
+        with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+            records=[json.loads(line) for line in archive.read('logs.jsonl').splitlines()]
+            self.assertEqual(records,rows)
+            self.assertFalse(json.loads(archive.read('summary.json'))['truncated'])
+        self.assertNotIn('Test-password',str(rows))
+        self.assertNotIn('firm_session',str(rows))
+        self.assertEqual((await self.client.post('/api/diagnostics/export',headers={'X-CSRF-Token':'bad'})).status_code,403)
+        self.assertEqual((await self.client.get('/api/diagnostics/logs',params={'since':'2026-01-01','until':'2026-10-01'})).status_code,422)
+
+    async def test_chinese_unexpected_exception_and_safe_diagnostics(self):
+        from fastapi import FastAPI, Request
+        from http_security import install_http_boundary
+        from diagnostics import selected, Filters
+        from diagnostic_reader import read_records, window
+        from database import DATA_DIR
+        probe=FastAPI()
+        install_http_boundary(probe,'FIRM_MANAGER',80)
+        @probe.get('/api/probe')
+        def fail(request:Request):
+            request.state.actor_id=self.leader_id
+            raise RuntimeError('SECRET-SQL bank=622222 password=should-never-leak')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=probe),base_url='http://testserver') as client:
+            response=await client.get('/api/probe')
+            self.assertEqual(response.status_code,500,response.text)
+            detail=response.json()['detail']
+            self.assertEqual(detail['category'],'system_error')
+            self.assertIn('服务处理失败',detail['message'])
+            request_id=detail['request_id']
+            self.assertEqual(response.headers['X-Request-ID'],request_id)
+            missing=await client.get('/api/missing')
+            self.assertIn('不存在',missing.json()['detail']['message'])
+        since,until=window(None,None)
+        rows,_=read_records(DATA_DIR/'logs',('operations.jsonl*',),since,until,{'request_id':request_id})
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['exception_type'],'RuntimeError')
+        self.assertIn('fail',rows[0]['exception_location'])
+        self.assertNotIn('SECRET-SQL',str(rows)+response.text)
+        self.assertNotIn('622222',str(rows)+response.text)
+
+    def test_diagnostic_reader_timezone_and_projection(self):
+        import json
+        from datetime import timezone
+        from diagnostic_reader import window, read_records
+        since,until=window(datetime.fromisoformat('2026-10-02T08:00:00+08:00'),datetime.fromisoformat('2026-10-02T09:00:00+08:00'))
+        self.assertEqual(since.hour,0)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'operations.jsonl'
+            path.write_text(json.dumps({'timestamp':'2026-10-02T00:30:00Z','event':'probe','password':'SECRET','bank_account':'622222','headers':{'Cookie':'secret'}})+'\n{bad json}\n')
+            rows,_=read_records(Path(directory),('operations.jsonl*',),since,until,{})
+            self.assertEqual(rows,[{'timestamp':'2026-10-02T00:30:00Z','event':'probe'}])
+
 if __name__ == "__main__":
     unittest.main()

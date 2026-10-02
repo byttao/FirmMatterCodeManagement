@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exceptions import RequestValidationError
+from error_messages import public_error, category, exception_location, validation_message
 
 COOKIE = "firm_session"
 CSRF_COOKIE = "firm_csrf"
@@ -120,11 +121,10 @@ def install_http_boundary(app, prefix, default_port):
         pass
     hosts.update(value.strip() for value in os.getenv(prefix + "_ALLOWED_HOSTS", "").split(",") if value.strip())
 
-    @app.middleware("http")
-    async def http_boundary(request, call_next):
-        request.state.request_id = secrets.token_hex(16)
+    async def checked_request(request, call_next):
         def rejected(code, message, status):
-            return JSONResponse(status_code=status, content={"detail": {"code": code, "message": message, "request_id": request.state.request_id}},
+            request.state.reason_code = code
+            return JSONResponse(status_code=status, content={"detail": {"code": code, "message": message, "category": category(status), "request_id": request.state.request_id}},
                                 headers={"X-Request-ID": request.state.request_id})
         try:
             authority = urlsplit("http://" + request.headers.get("host", ""))
@@ -149,16 +149,41 @@ def install_http_boundary(app, prefix, default_port):
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
+    @app.middleware("http")
+    async def http_boundary(request, call_next):
+        from diagnostics import record_request
+        request.state.request_id = secrets.token_hex(16)
+        started = time.monotonic()
+        try:
+            response = await checked_request(request, call_next)
+        except Exception as error:
+            request.state.reason_code = "internal_error"
+            request.state.exception_type = type(error).__name__
+            request.state.exception_location = exception_location(error)
+            response = JSONResponse(status_code=500, content={"detail": {
+                **public_error(500), "request_id": request.state.request_id}})
+        response.headers["X-Request-ID"] = request.state.request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+            # Logging failures must not change a completed business transaction's response.
+            try: record_request(request, response.status_code, started)
+            except Exception: pass
+        return response
+
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request, error):
-        detail = error.detail
-        if isinstance(detail, dict):
-            code, message = detail.get("code", "request_rejected"), detail.get("message", "请求被拒绝")
-        else:
-            code, message = "request_rejected", str(detail)
+        detail = public_error(error.status_code, error.detail)
+        request.state.reason_code = detail["code"]
+        if error.status_code >= 500 and (error.__cause__ or error.__context__):
+            cause = error.__cause__ or error.__context__
+            request.state.exception_type = type(cause).__name__
+            request.state.exception_location = exception_location(cause)
         return JSONResponse(status_code=error.status_code, headers=error.headers,
-                            content={"detail": {"code": code, "message": message, "request_id": getattr(request.state, "request_id", "")}})
+                            content={"detail": {**detail, "request_id": getattr(request.state, "request_id", "")}})
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, error):
-        return JSONResponse(status_code=422, content={"detail": {"code": "invalid_input", "message": "输入格式或字段不合法", "request_id": getattr(request.state, "request_id", "")}})
+        request.state.reason_code = "invalid_input"
+        return JSONResponse(status_code=422, content={"detail": {
+            **public_error(422), "message": validation_message(error.errors()), "request_id": getattr(request.state, "request_id", "")}})

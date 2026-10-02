@@ -65,7 +65,7 @@ export default function LicenseManagement() {
       await load()
       window.dispatchEvent(new Event('license-updated'))
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || '授权导入失败，请确认 JSON 文件和授权服务器地址')
+      setError(err.userMessage || '授权文件格式不正确，请选择有效的授权 JSON 文件')
     }
   }
 
@@ -96,7 +96,7 @@ export default function LicenseManagement() {
       setMessage('品牌设置已保存')
       if (branding.append_title && branding.short_name) document.title = `业码汇 - ${branding.short_name}`
     } catch (err: any) {
-      setError(err.response?.data?.detail || '品牌设置保存失败')
+      setError(err.userMessage || err.response?.data?.detail || '品牌设置保存失败')
     }
   }
 
@@ -108,7 +108,7 @@ export default function LicenseManagement() {
       await load()
       window.dispatchEvent(new Event('license-updated'))
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || '授权状态更新失败')
+      setError(err.userMessage || err.response?.data?.detail || err.message || '授权状态更新失败')
       await load().catch(() => undefined)
     } finally {
       setHeartbeatLoading(false)
@@ -167,7 +167,7 @@ export default function LicenseManagement() {
           <Button onClick={activate} disabled={!licenseJson.trim()}>导入并激活</Button>
         </CardContent>
       </Card>
-      <Card><CardHeader><CardTitle>恢复授权连接地址</CardTitle><CardDescription>旧地址失效时填写新的HTTP IP和端口；只有通过原发行公钥核验的中心响应才会保存。</CardDescription></CardHeader><CardContent className="space-y-3"><Input value={recoveryUrl} onChange={e=>setRecoveryUrl(e.target.value)} placeholder="http://192.168.10.20:8100" /><Button variant="outline" disabled={!license.license_id||!recoveryUrl.trim()} onClick={async()=>{setError('');try{await licenseApi.recoverEndpoint(recoveryUrl);await load();setMessage('新地址已核验并保存');window.dispatchEvent(new Event('license-updated'))}catch(e:any){setError(e.response?.data?.detail||'恢复失败，原地址保留')}}}>核验并保存新地址</Button></CardContent></Card>
+      <Card><CardHeader><CardTitle>恢复授权连接地址</CardTitle><CardDescription>旧地址失效时填写新的HTTP IP和端口；只有通过原发行公钥核验的中心响应才会保存。</CardDescription></CardHeader><CardContent className="space-y-3"><Input value={recoveryUrl} onChange={e=>setRecoveryUrl(e.target.value)} placeholder="http://192.168.10.20:8100" /><Button variant="outline" disabled={!license.license_id||!recoveryUrl.trim()} onClick={async()=>{setError('');try{await licenseApi.recoverEndpoint(recoveryUrl);await load();setMessage('新地址已核验并保存');window.dispatchEvent(new Event('license-updated'))}catch(e:any){setError(e.userMessage || e.response?.data?.detail||'恢复失败，原地址保留')}}}>核验并保存新地址</Button></CardContent></Card>
       <Card>
         <CardHeader><CardTitle>事务所展示</CardTitle><CardDescription>可将事务所 LOGO 和简称用于登录页及网页标题。</CardDescription></CardHeader>
         <CardContent className="space-y-4">

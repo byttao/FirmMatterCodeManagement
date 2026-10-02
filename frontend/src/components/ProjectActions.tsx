@@ -16,7 +16,7 @@ export default function ProjectActions({project,onChange}:{project:Project;onCha
     if(!reason?.trim())return
     setBusy(true)
     try{await projectRequestApi.propose(project.id,{expected_revision:project.revision,kind,target_leader_id:target?Number(target):undefined,reason});setMessage('申请已提交')}
-    catch(e:any){setMessage(e.response?.data?.detail||'申请失败')}
+    catch(e:any){setMessage(e.userMessage || e.response?.data?.detail||'申请失败')}
     finally{setBusy(false)}
   }
   const correct=async()=>{
@@ -30,7 +30,7 @@ export default function ProjectActions({project,onChange}:{project:Project;onCha
       if(!reason?.trim())return
       await projectRequestApi.correctCustomer(project.id,project.revision,customer.id,reason)
       onChange((await projectApi.get(project.id)).data);setMessage('客户归属已更正')
-    }catch(e:any){setMessage(e.response?.data?.detail||'纠错失败')}
+    }catch(e:any){setMessage(e.userMessage || e.response?.data?.detail||'纠错失败')}
     finally{setBusy(false)}
   }
   const leader=user?.id===project.leader_id&&can(user,'project.edit.led')

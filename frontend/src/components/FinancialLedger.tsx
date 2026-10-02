@@ -30,13 +30,13 @@ export function FinancialLedger({project, canEdit, onProjectChange}: Props) {
     const [invoices, receipts] = await Promise.all([financeApi.list(project.id,'invoices',pages.invoices), financeApi.list(project.id,'receipts',pages.receipts)])
     setRecords({invoices:invoices.data,receipts:receipts.data})
   }
-  useEffect(()=>{if(readEntries)load().catch((e:any)=>setError(e.response?.data?.detail||'无法加载财务记录'))},[project.id,readEntries,pages])
+  useEffect(()=>{if(readEntries)load().catch((e:any)=>setError(e.userMessage || e.response?.data?.detail||'无法加载财务记录'))},[project.id,readEntries,pages])
   const refresh = async () => {await load(); onProjectChange((await projectApi.get(project.id)).data)}
   const open = async (selected: FinanceKind, replacement?: FinancialEntry) => {
     setError(''); pending.current=null
     setForm({amount:replacement?.amount||0, occurred_on:localDate(), reference:'',note:'',expected_project_revision:project.revision,replacement_of_id:replacement?.id})
     if(selected==='invoices') {
-      try{setProfiles((await billingApi.profiles(project.customer_id)).data)}catch(e:any){setError(e.response?.data?.detail||'无法加载开票档案')}
+      try{setProfiles((await billingApi.profiles(project.customer_id)).data)}catch(e:any){setError(e.userMessage || e.response?.data?.detail||'无法加载开票档案')}
     }
     setKind(selected)
   }
@@ -48,16 +48,16 @@ export function FinancialLedger({project, canEdit, onProjectChange}: Props) {
       if(pending.current?.payload!==payload)pending.current={payload,key:requestKey()}
       await financeApi.create(project.id,kind,form,pending.current!.key)
       await refresh(); setKind(null); pending.current=null
-    }catch(e:any){setError(e.response?.data?.detail||'登记失败，草稿已保留')}
+    }catch(e:any){setError(e.userMessage || e.response?.data?.detail||'登记失败，草稿已保留')}
     finally{setSaving(false)}
   }
   const voidEntry = async (selected: FinanceKind, entry: FinancialEntry) => {
     const reason=window.prompt('登记作废原因（税务平台作废或红冲须另行办理）')
     if(!reason?.trim())return
-    try{await financeApi.void(project.id,selected,entry.id,entry.revision,reason); await refresh()}catch(e:any){setError(e.response?.data?.detail||'作废失败')}
+    try{await financeApi.void(project.id,selected,entry.id,entry.revision,reason); await refresh()}catch(e:any){setError(e.userMessage || e.response?.data?.detail||'作废失败')}
   }
   const showSnapshot = async (entry: FinancialEntry) => {
-    try{setSnapshot((await financeApi.snapshot(project.id,entry.id)).data)}catch(e:any){setError(e.response?.data?.detail||'无法读取历史快照')}
+    try{setSnapshot((await financeApi.snapshot(project.id,entry.id)).data)}catch(e:any){setError(e.userMessage || e.response?.data?.detail||'无法读取历史快照')}
   }
   return <div className="space-y-5">
     <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">{[['合同金额',project.contract_amount],['已开票',project.invoiced_amount],['未开票',project.uninvoiced_amount],['已收款',project.received_amount],['未收款',project.unreceived_amount]].map(([label,value])=><div key={String(label)}><p className="text-muted-foreground">{label}</p><strong>{formatCurrency(value as number|null)}</strong></div>)}</div>

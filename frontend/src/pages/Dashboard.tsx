@@ -38,7 +38,7 @@ export default function Dashboard() {
       await exportApi.submit({export_type:'projects',filters:{fiscal_year:fiscalYear}})
       navigate('/exports')
     } catch (err:any) {
-      window.alert(err.response?.data?.detail||'导出提交失败')
+      window.alert(err.userMessage || err.response?.data?.detail||'导出提交失败')
     }
   }
 

@@ -322,7 +322,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
         navigate('/projects')
         return
       }
-      alert(err.response?.data?.detail || '加载项目失败')
+      alert(err.userMessage || err.response?.data?.detail || '加载项目失败')
       setLoading(false)
     }
   }
@@ -432,7 +432,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
       setDirty(false)
     } catch (err: any) {
       if (err.response?.status === 409 && project) setConflict((await projectApi.get(project.id)).data)
-      alert(err.response?.data?.detail || '保存失败')
+      alert(err.userMessage || err.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
     }
@@ -455,7 +455,7 @@ export default function ProjectForm({ readonly = false }: ProjectFormProps) {
       })
       alert('报告编号生成成功：' + res.data.report_no)
     } catch (err: any) {
-      alert(err.response?.data?.detail || '生成编号失败')
+      alert(err.userMessage || err.response?.data?.detail || '生成编号失败')
     } finally {
       setGeneratingNo(false)
     }

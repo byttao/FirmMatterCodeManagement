@@ -65,6 +65,8 @@ from project_queries import filter_projects
 app.include_router(export_router)
 from backups import router as backup_router
 app.include_router(backup_router)
+from diagnostics import router as diagnostics_router
+app.include_router(diagnostics_router)
 _license_heartbeat_lock = asyncio.Lock()
 
 
@@ -121,7 +123,7 @@ async def stop_license_heartbeat():
 @app.middleware("http")
 async def enforce_license(request: Request, call_next):
     """按唯一可信状态源执行业务写入与功能许可检查。"""
-    if request.method not in {'GET','HEAD','OPTIONS'} and request.url.path.startswith('/api/') and not request.url.path.startswith(('/api/auth/','/api/license/','/api/system/backup','/api/export-jobs')):
+    if request.method not in {'GET','HEAD','OPTIONS'} and request.url.path.startswith('/api/') and not request.url.path.startswith(('/api/auth/','/api/license/','/api/system/backup','/api/export-jobs','/api/diagnostics')):
         def restored_hold():
             with SessionLocal() as db:
                 row=db.get(models.AppSetting,'restore_hold')
@@ -140,7 +142,7 @@ async def enforce_license(request: Request, call_next):
         "/api/auth/otp/login",
     }:
         current = license_status()
-        security_action = request.url.path.startswith("/api/auth/") or request.url.path.startswith('/api/system/backup') or request.url.path.startswith('/api/export-jobs') or (request.method in ('PUT','DELETE') and re.fullmatch(r'/api/users/[0-9]+', request.url.path))
+        security_action = request.url.path.startswith("/api/auth/") or request.url.path.startswith('/api/system/backup') or request.url.path.startswith('/api/export-jobs') or request.url.path.startswith('/api/diagnostics') or (request.method in ('PUT','DELETE') and re.fullmatch(r'/api/users/[0-9]+', request.url.path))
         if not current.get("allowed") and request.method not in {"GET", "HEAD", "OPTIONS"} and not security_action:
             return JSONResponse(status_code=402, content={"detail": current.get("reason", "授权不可用"), "license_required": True})
         # Enforce module-level entitlements at the API boundary so direct API
@@ -246,7 +248,7 @@ async def activate_license_file(data: schemas.LicenseActivationRequest, current_
     try:
         result = await activate_license(data.license_document, data.server_url, data.instance_name)
     except (ValueError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "http_status", 400), detail=str(exc))
     return result
 
 
@@ -258,7 +260,7 @@ async def send_license_heartbeat(request: Request, current_user: models.User = D
     try:
         result = await heartbeat_license()
     except (ValueError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "http_status", 400), detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail='授权服务器连接失败，请提供请求编号')
     return {"message": "授权状态更新成功", "license_key": result.get("license_key"), "heartbeat": heartbeat_state()}
@@ -277,7 +279,7 @@ async def recover_license_endpoint(data: EndpointRecovery, current_user: models.
     try:
         await license_manager.communicate('heartbeat', server_url=data.server_url)
     except ValueError as error:
-        raise HTTPException(400, str(error))
+        raise HTTPException(getattr(error, "http_status", 400), str(error))
     return {'message':'新端点已通过原信任公钥核验并保存'}
 
 
@@ -435,7 +437,7 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
         try:
             await activate_license(data.license_document, data.license_server_url, data.instance_name)
         except (ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=f"授权激活失败：{exc}")
+            raise HTTPException(status_code=getattr(exc, "http_status", 400), detail=f"授权激活失败：{exc}")
     elif license_status().get('mode') not in ('trial', 'development'):
         raise HTTPException(status_code=402, detail='授权不可用，请导入合法许可证')
     if db.get_bind().dialect.name == "sqlite":
@@ -555,6 +557,7 @@ def login(form_data: schemas.UserLogin, request: Request, response: Response, db
             detail="用户名或密码错误"
         )
 
+    request.state.actor_id = user.id
     fiscal_year = configured_fiscal_year(db, user, form_data.fiscal_year)
 
     throttle.record(form_data.username, client_ip, True)
@@ -1498,7 +1501,7 @@ def create_project(
     try:
         get_rule(db, project_data.firm, project_data.report_type, fiscal_year)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "http_status", 400), detail=str(exc))
 
     validate_project_people(db, project_data.leader_id, project_data.member_ids or [])
     validate_project_signers(db, (project_data.signer1_id, project_data.signer2_id), project_data.firm)
@@ -1600,7 +1603,7 @@ def update_project(
         try:
             get_rule(db, firm, report_type, project.fiscal_year)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=getattr(exc, "http_status", 400), detail=str(exc))
 
     validate_project_signers(db, (signer1_id, signer2_id), firm, project)
     validate_project_people(

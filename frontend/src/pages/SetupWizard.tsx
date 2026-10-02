@@ -131,7 +131,7 @@ export default function SetupWizard() {
       })
       navigate('/login', { replace: true, state: { setupComplete: true } })
     } catch (err: any) {
-      setError(err.response?.data?.detail || '初始化失败，请检查填写内容后重试')
+      setError(err.userMessage || err.response?.data?.detail || '初始化失败，请检查填写内容后重试')
     } finally {
       setSaving(false)
     }

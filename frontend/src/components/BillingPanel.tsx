@@ -31,7 +31,7 @@ export default function BillingPanel({customerId}: {customerId: number}) {
   const copyRef = useRef<HTMLTextAreaElement>(null)
   const manage = can(user, 'billing.manage')
   const load = async () => { setProfiles((await billingApi.profiles(customerId)).data) }
-  useEffect(() => {setProfiles([]); setCopyText(null); load().catch((e: any) => setError(e.response?.data?.detail || '开票资料暂不可读'))}, [customerId, user?.id])
+  useEffect(() => {setProfiles([]); setCopyText(null); load().catch((e: any) => setError(e.userMessage || e.response?.data?.detail || '开票资料暂不可读'))}, [customerId, user?.id])
   useEffect(() => {
     const guard = (e: BeforeUnloadEvent) => {if (editor) {e.preventDefault(); e.returnValue=''}}
     window.addEventListener('beforeunload', guard)
@@ -42,7 +42,7 @@ export default function BillingPanel({customerId}: {customerId: number}) {
     try {
       const values = version ? (await billingApi.reveal(version.id)).data.fields : {}
       setForm(values); setLabel(profile?.label || '默认开票资料'); setEditor({profile, version: clone ? undefined : version})
-    } catch (e: any) {setError(e.response?.data?.detail || '无法读取草稿')}
+    } catch (e: any) {setError(e.userMessage || e.response?.data?.detail || '无法读取草稿')}
   }
   const save = async () => {
     if (!editor || saving) return
@@ -54,25 +54,25 @@ export default function BillingPanel({customerId}: {customerId: number}) {
       else await billingApi.create(customerId, label, values)
       await load()
       setEditor(null)
-    } catch (e: any) {setError(e.response?.data?.detail || '保存失败，草稿已保留')}
+    } catch (e: any) {setError(e.userMessage || e.response?.data?.detail || '保存失败，草稿已保留')}
     finally {setSaving(false)}
   }
   const submit = async (version: any) => {
-    try {await billingApi.submit(version.id, version.revision); await load()} catch(e: any) {setError(e.response?.data?.detail || '提交失败')}
+    try {await billingApi.submit(version.id, version.revision); await load()} catch(e: any) {setError(e.userMessage || e.response?.data?.detail || '提交失败')}
   }
   const verifyPreview = async (profile: any, version: any) => {
     try {const res=await billingApi.preview(version.id); setPreview({profile, version, ...res.data}); setNote('')}
-    catch(e: any) {setError(e.response?.data?.detail || '无法核验')}
+    catch(e: any) {setError(e.userMessage || e.response?.data?.detail || '无法核验')}
   }
   const verify = async (decision: string) => {
     if (!preview || !note.trim()) return
     setSaving(true)
     try {await billingApi.verify(preview.version.id, preview.version.revision, preview.profile.revision, decision, note); setPreview(null); await load()}
-    catch(e: any) {setError(e.response?.data?.detail || '核验失败，当前资料已保留')}
+    catch(e: any) {setError(e.userMessage || e.response?.data?.detail || '核验失败，当前资料已保留')}
     finally {setSaving(false)}
   }
   const reveal = async (version: any) => {
-    try {setCopyText((await billingApi.reveal(version.id)).data.copy_text)} catch(e: any) {setError(e.response?.data?.detail || '无法读取开票资料')}
+    try {setCopyText((await billingApi.reveal(version.id)).data.copy_text)} catch(e: any) {setError(e.userMessage || e.response?.data?.detail || '无法读取开票资料')}
   }
   const copy = async () => {
     try {
@@ -87,7 +87,7 @@ export default function BillingPanel({customerId}: {customerId: number}) {
     {profiles.map(profile => <section key={profile.id} className="border-t pt-3 space-y-2">
       <div className="flex flex-wrap justify-between gap-2"><h3 className="font-medium">{profile.label}{profile.is_default && ' · 默认'}{!profile.is_active && ' · 停用'}</h3><div className="flex gap-1">
         <Button type="button" size="sm" variant="outline" onClick={() => openEditor(profile, profile.versions.find((v: any) => v.id === profile.current_verified_version_id), true)}><Plus className="mr-1 h-4 w-4" />新版本</Button>
-        {manage && <><Button type="button" size="icon" variant="ghost" title="设为默认" onClick={async()=>{try{await billingApi.configure(profile.id, profile.revision, {is_default:true}); await load()}catch(e:any){setError(e.response?.data?.detail||'保存失败')}}}><Star className="h-4 w-4" /></Button><Button type="button" size="icon" variant="ghost" title={profile.is_active ? '停用档案' : '启用档案'} onClick={async()=>{try{await billingApi.configure(profile.id, profile.revision, {is_active:!profile.is_active}); await load()}catch(e:any){setError(e.response?.data?.detail||'保存失败')}}}><Power className="h-4 w-4" /></Button></>}
+        {manage && <><Button type="button" size="icon" variant="ghost" title="设为默认" onClick={async()=>{try{await billingApi.configure(profile.id, profile.revision, {is_default:true}); await load()}catch(e:any){setError(e.userMessage || e.response?.data?.detail||'保存失败')}}}><Star className="h-4 w-4" /></Button><Button type="button" size="icon" variant="ghost" title={profile.is_active ? '停用档案' : '启用档案'} onClick={async()=>{try{await billingApi.configure(profile.id, profile.revision, {is_active:!profile.is_active}); await load()}catch(e:any){setError(e.userMessage || e.response?.data?.detail||'保存失败')}}}><Power className="h-4 w-4" /></Button></>}
       </div></div>
       <div className="border rounded-md overflow-x-auto"><Table className="min-w-[640px]"><TableHeader><TableRow><TableHead>版本</TableHead><TableHead>状态</TableHead><TableHead>抬头 / 税号</TableHead><TableHead>银行末四位</TableHead><TableHead>核验</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{profile.versions.map((version: any) => <TableRow key={version.id}><TableCell>V{version.version_no}</TableCell><TableCell>{statusNames[version.status]}</TableCell><TableCell>{version.fields.title}<br />{version.fields.tax_id || '-'}</TableCell><TableCell>{version.bank_last4 ? `****${version.bank_last4}` : '未登记'}</TableCell><TableCell>{version.verified_by || '-'}<br />{version.verification_note}</TableCell><TableCell><div className="flex gap-1">
         <Button type="button" size="icon" variant="ghost" title="查看 / 复制开票资料" onClick={() => reveal(version)}><Eye className="h-4 w-4" /></Button>

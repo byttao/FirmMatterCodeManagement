@@ -39,8 +39,8 @@ def event(name, **fields):
                     if path.stat().st_mtime < time.time() - 30*86400:
                         path.unlink(missing_ok=True)
                 last_cleanup = time.monotonic()
-        allowed = {'request_id','target_url','result','reason_code','duration_ms','operation','job_id','row_count','exit_code'}
-        record = {key: value for key,value in fields.items() if key in allowed}
+        allowed = {'request_id','target_url','result','reason_code','duration_ms','operation','job_id','row_count','exit_code','level','method','route','status_code','client_ip','actor_id','category','exception_type','exception_location'}
+        record = {key: ("".join(c for c in value if ord(c) >= 32)[:500] if isinstance(value,str) else value) for key,value in fields.items() if key in allowed}
         record.update(event=name,timestamp=datetime.now(timezone.utc).isoformat())
         logger.info(json.dumps(record,ensure_ascii=False))
     except (OSError,ValueError):

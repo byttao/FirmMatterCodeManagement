@@ -26,10 +26,10 @@ export default function CustomerDetail() {
   const [checked, setChecked] = useState(false)
   const [preview, setPreview] = useState<any>(null)
   const [saving, setSaving] = useState(false)
-  useEffect(()=>{setCustomer(null); customerApi.get(Number(customerId)).then(r=>setCustomer(r.data)).catch((e:any)=>setError(e.response?.data?.detail||'客户不可读'))},[customerId])
+  useEffect(()=>{setCustomer(null); customerApi.get(Number(customerId)).then(r=>setCustomer(r.data)).catch((e:any)=>setError(e.userMessage || e.response?.data?.detail||'客户不可读'))},[customerId])
   useEffect(()=>{
-    if(tab==='changes')customerApi.changes(Number(customerId)).then(r=>setChanges(r.data)).catch((e:any)=>setError(e.response?.data?.detail||'无法加载历史'))
-    if(tab==='projects')projectApi.list({customer_id:Number(customerId),page,page_size:20}).then(r=>{setProjects(r.data.items);setTotal(r.data.total)}).catch((e:any)=>setError(e.response?.data?.detail||'无法加载项目'))
+    if(tab==='changes')customerApi.changes(Number(customerId)).then(r=>setChanges(r.data)).catch((e:any)=>setError(e.userMessage || e.response?.data?.detail||'无法加载历史'))
+    if(tab==='projects')projectApi.list({customer_id:Number(customerId),page,page_size:20}).then(r=>{setProjects(r.data.items);setTotal(r.data.total)}).catch((e:any)=>setError(e.userMessage || e.response?.data?.detail||'无法加载项目'))
   },[tab,customerId,page])
   const merge = async (dryRun: boolean) => {
     setSaving(true);setError('')
@@ -38,7 +38,7 @@ export default function CustomerDetail() {
       const result=await customerApi.merge(customer.id,{target_id:target.id,expected_revision:customer.revision,expected_target_revision:target.revision,reason,identity_checked:checked,dry_run:dryRun})
       if(dryRun)setPreview(result.data)
       else navigate(`/customers/${target.id}`)
-    }catch(e:any){setError(e.response?.data?.detail||'合并失败，输入已保留')}
+    }catch(e:any){setError(e.userMessage || e.response?.data?.detail||'合并失败，输入已保留')}
     finally{setSaving(false)}
   }
   return <div className="max-w-6xl space-y-4">

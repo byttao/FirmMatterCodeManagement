@@ -445,7 +445,7 @@ export default function FiscalYearConfigPage() {
       loadData()
       setShowYearDialog(false)
     } catch (err: any) {
-      alert(err.response?.data?.detail || '创建失败')
+      alert(err.userMessage || err.response?.data?.detail || '创建失败')
     } finally {
       setSaving(false)
     }
@@ -459,7 +459,7 @@ export default function FiscalYearConfigPage() {
       loadData()
       setShowFirmDialog(false)
     } catch (err: any) {
-      alert(err.response?.data?.detail || '创建失败')
+      alert(err.userMessage || err.response?.data?.detail || '创建失败')
     } finally {
       setSaving(false)
     }
@@ -494,7 +494,7 @@ export default function FiscalYearConfigPage() {
         setSelectedRule(null)
       }
     } catch (err: any) {
-      alert(err.response?.data?.detail || '保存失败')
+      alert(err.userMessage || err.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
     }
@@ -530,7 +530,7 @@ export default function FiscalYearConfigPage() {
         setSelectedReportType(null)
       }
     } catch (err: any) {
-      alert(err.response?.data?.detail || '保存失败')
+      alert(err.userMessage || err.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
     }
@@ -558,7 +558,7 @@ export default function FiscalYearConfigPage() {
       setDeleteTarget(null)
       loadData()
     } catch (err: any) {
-      alert(err.response?.data?.detail || '删除失败')
+      alert(err.userMessage || err.response?.data?.detail || '删除失败')
     } finally {
       setDeleteLoading(false)
     }

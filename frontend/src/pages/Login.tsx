@@ -14,7 +14,8 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [fiscalYear, setFiscalYear] = useState<number>(new Date().getFullYear())
   const [availableYears, setAvailableYears] = useState<number[]>([])
-  const [error, setError] = useState('')
+  const [error, setError] = useState(() => sessionStorage.getItem('loginNotice') || '')
+  useEffect(() => { sessionStorage.removeItem('loginNotice') }, [])
   const [loading, setLoading] = useState(false)
   const [initLoading, setInitLoading] = useState(true)
   const [branding, setBranding] = useState({ short_name: '', logo_data: '', replace_banner: false, append_title: false })
@@ -72,7 +73,7 @@ export default function Login() {
       login(token, userRes.data, returnedFiscalYear)
       navigate('/')
     } catch (err: any) {
-      setError(err.response?.data?.detail || '登录失败')
+      setError(err.userMessage || err.response?.data?.detail || '登录失败')
     } finally {
       setLoading(false)
     }

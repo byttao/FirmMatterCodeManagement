@@ -94,7 +94,7 @@ export default function UserManagement() {
       loadUsers()
       setShowDialog(false)
     } catch (err: any) {
-      alert(err.response?.data?.detail || '保存失败')
+      alert(err.userMessage || err.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
     }
@@ -108,7 +108,7 @@ export default function UserManagement() {
       loadUsers()
       setDeletingUser(null)
     } catch (err: any) {
-      alert(err.response?.data?.detail || '删除失败')
+      alert(err.userMessage || err.response?.data?.detail || '删除失败')
     } finally {
       setDeleteLoading(false)
     }
@@ -119,7 +119,7 @@ export default function UserManagement() {
       await userApi.update(user.id, { is_active: true, expected_revision: user.permission_revision })
       loadUsers()
     } catch (err: any) {
-      alert(err.response?.data?.detail || '恢复失败')
+      alert(err.userMessage || err.response?.data?.detail || '恢复失败')
     }
   }
 

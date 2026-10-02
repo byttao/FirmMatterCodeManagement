@@ -13,7 +13,7 @@ export default function AccountSecurity() {
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setMessage('')
     try { await authApi.changePassword(currentPassword, newPassword); window.location.assign('/login') }
-    catch (error: any) { setMessage(error.response?.data?.detail || '改密失败'); setBusy(false) }
+    catch (error: any) { setMessage(error.userMessage || error.response?.data?.detail || '改密失败'); setBusy(false) }
   }
   async function revokeAll() {
     if (!window.confirm('确定退出所有设备？')) return

@@ -82,6 +82,7 @@ export default function Layout() {
   const navItems = [
     { path: '/account', label: '账号安全', icon: ShieldCheck, show: true },
     { path: '/exports', label: '导出任务', icon: Briefcase, show: user?.permissions.some(p=>p.startsWith('project.export.')||p==='signer.manage'||p==='billing.export_sensitive') },
+    { path: '/runtime-logs', label: '运行日志', icon: ShieldCheck, show: can(user,'diagnostics.read') },
     { path: '/system-backup', label: '备份与恢复', icon: ShieldCheck, show: can(user,'system.backup') },
     { path: '/', label: '数据看板', icon: LayoutDashboard, show: true },
     { path: '/customers', label: '客户管理', icon: Building2, show: can(user, 'customer.lookup') },

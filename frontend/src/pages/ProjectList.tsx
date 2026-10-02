@@ -67,7 +67,7 @@ export default function ProjectList() {
   const canRecycleNo = user?.permissions.includes('number.void')
   async function exportFiltered(){
     try{await exportApi.submit({export_type:'projects',filters:{fiscal_year:fiscalYear,search:search||undefined,firm:firm==='all'?undefined:firm,report_type:reportType==='all'?undefined:reportType,project_status:projectStatus==='all'?undefined:projectStatus,leader_id:leaderId==='all'?undefined:Number(leaderId)},columns:visibleColumns.filter(key=>key!=='contract_amount'||user?.permissions.some(p=>['finance.read.all','finance.summary.led'].includes(p)))});navigate('/exports')}
-    catch(e:any){window.alert(e.response?.data?.detail||'导出提交失败')}
+    catch(e:any){window.alert(e.userMessage || e.response?.data?.detail||'导出提交失败')}
   }
 
   // 判断用户是否可以删除某个项目
@@ -193,7 +193,7 @@ export default function ProjectList() {
       loadProjects()
       setDeleteProject(null)
     } catch (err: any) {
-      alert(err.response?.data?.detail || '删除失败')
+      alert(err.userMessage || err.response?.data?.detail || '删除失败')
     } finally {
       setDeleting(false)
     }
@@ -206,7 +206,7 @@ export default function ProjectList() {
       await projectApi.recycleReportNo(project.id, project.revision, reason)
       loadProjects()
     } catch (err: any) {
-      alert(err.response?.data?.detail || '回收编号失败')
+      alert(err.userMessage || err.response?.data?.detail || '回收编号失败')
     }
   }
 

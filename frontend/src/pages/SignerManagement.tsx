@@ -116,7 +116,7 @@ export default function SignerManagement() {
       loadSigners()
       setShowDialog(false)
     } catch (err: any) {
-      toast({ title: err.response?.data?.detail || '保存失败', variant: 'destructive' })
+      toast({ title: err.userMessage || err.response?.data?.detail || '保存失败', variant: 'destructive' })
     } finally {
       setSaving(false)
     }
@@ -133,7 +133,7 @@ export default function SignerManagement() {
       }
       loadSigners()
     } catch (err: any) {
-      toast({ title: err.response?.data?.detail || '操作失败', variant: 'destructive' })
+      toast({ title: err.userMessage || err.response?.data?.detail || '操作失败', variant: 'destructive' })
     }
   }
 
@@ -147,7 +147,7 @@ export default function SignerManagement() {
       loadSigners()
       setDeletingSigner(null)
     } catch (err: any) {
-      toast({ title: err.response?.data?.detail || '删除失败', variant: 'destructive' })
+      toast({ title: err.userMessage || err.response?.data?.detail || '删除失败', variant: 'destructive' })
     } finally {
       setDeleteLoading(false)
     }
@@ -192,7 +192,7 @@ export default function SignerManagement() {
       loadSigners()
       loadFirms()
     } catch (err: any) {
-      toast({ title: err.response?.data?.detail || '导入失败', variant: 'destructive' })
+      toast({ title: err.userMessage || err.response?.data?.detail || '导入失败', variant: 'destructive' })
     } finally {
       setImporting(false)
       if (fileInputRef.current) fileInputRef.current.value = ''

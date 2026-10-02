@@ -263,14 +263,17 @@ def generate(job_id):
             job.status='succeeded';job.file_id=job.id;job.file_size=ready.stat().st_size;job.row_count=count
             job.finished_at=datetime.utcnow();job.expires_at=job.finished_at+timedelta(hours=24)
             db.commit()
-        log_event('export.finished',job_id=job_id,result='succeeded',row_count=count)
+            request_id, actor_id = job.request_id, job.requested_by
+        log_event('export.finished',job_id=job_id,result='succeeded',row_count=count,request_id=request_id,actor_id=actor_id,level='INFO',category='success')
     except Exception as error:
         code=str(error) if isinstance(error,ExportStopped) else 'generation_failed'
         temporary.unlink(missing_ok=True);ready.unlink(missing_ok=True)
         with SessionLocal() as db:
             job=db.get(models.ExportJob,job_id)
             job.status='cancelled' if code=='cancelled' else 'failed';job.error_code=code;job.finished_at=datetime.utcnow();db.commit()
-        log_event('export.finished',job_id=job_id,result='failed',reason_code=code)
+            request_id, actor_id = job.request_id, job.requested_by
+        from error_messages import exception_location
+        log_event('export.finished',job_id=job_id,result='failed',reason_code=code,request_id=request_id,actor_id=actor_id,level='ERROR' if code=='generation_failed' else 'WARNING',category='system_error' if code=='generation_failed' else 'business_restriction',exception_type=type(error).__name__ if code=='generation_failed' else None,exception_location=exception_location(error) if code=='generation_failed' else None)
     finally:
         if book:
             for sheet in book.worksheets:

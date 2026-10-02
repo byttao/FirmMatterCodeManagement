@@ -95,6 +95,10 @@ def atomic_json(path,value):
         temporary.unlink(missing_ok=True)
 
 
+class LicenseCommunicationError(ValueError):
+    http_status = 502
+
+
 class LicenseManager:
     def __init__(self,directory=DATA_DIR,public_key=None,development=None):
         self.directory=Path(directory)
@@ -280,8 +284,11 @@ class LicenseManager:
                 event('license.communication',request_id=values['request_id'],target_url=url,operation=operation,result=lease['status'],duration_ms=round((time.monotonic()-started)*1000,2))
                 return result
             except (httpx.HTTPError,ValueError,OSError,KeyError,TypeError) as error:
-                self._state.update(last_attempt_at=iso(time.time()),last_result='error',last_error=type(error).__name__ if isinstance(error,httpx.HTTPError) else str(error));self.persist()
+                from error_messages import public_error
+                message = '无法连接授权中心，请检查网络、IP端口和服务状态；原有效离线租约继续按期限使用' if isinstance(error,httpx.HTTPError) else public_error(400, str(error))['message']
+                self._state.update(last_attempt_at=iso(time.time()),last_result='error',last_error=message);self.persist()
                 event('license.communication',request_id=values['request_id'],target_url=url,operation=operation,result='failed',reason_code=type(error).__name__)
+                if isinstance(error, httpx.HTTPError): raise LicenseCommunicationError(self._state['last_error']) from error
                 raise ValueError(self._state['last_error']) from error
 
 
