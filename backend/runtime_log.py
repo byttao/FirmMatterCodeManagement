@@ -11,6 +11,8 @@ from database import DATA_DIR
 logger = logging.getLogger('firm.operations')
 logger.setLevel(logging.INFO)
 logger.propagate = False
+from log_health import LogHealth
+health=LogHealth()
 drop_count = 0
 guard = threading.Lock()
 last_cleanup = 0
@@ -20,6 +22,7 @@ class SafeHandler(RotatingFileHandler):
     def handleError(self, record):
         global drop_count
         drop_count += 1
+        health.failure()
 
 
 def event(name, **fields):
@@ -42,6 +45,8 @@ def event(name, **fields):
         allowed = {'request_id','target_url','result','reason_code','duration_ms','operation','job_id','row_count','exit_code','level','method','route','status_code','client_ip','actor_id','category','exception_type','exception_location'}
         record = {key: ("".join(c for c in value if ord(c) >= 32)[:500] if isinstance(value,str) else value) for key,value in fields.items() if key in allowed}
         record.update(event=name,timestamp=datetime.now(timezone.utc).isoformat())
+        health.recover(logger)
         logger.info(json.dumps(record,ensure_ascii=False))
     except (OSError,ValueError):
         drop_count += 1
+        health.failure()

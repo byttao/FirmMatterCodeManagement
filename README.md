@@ -2,7 +2,7 @@
 
 <img src="docs/assets/yemahui-banner-large.png" alt="业码汇" width="100%">
 
-当前版本 **0.7.0**。本轮批次A增加[后勤开票办理任务](docs/后勤开票办理任务.md)，复用现有资料核验/加密版本/财务快照与导出/授权实现；对应授权中心v0.4.3。目标Windows2019与公网2Mbps仍待实机验证。见[实施状态](docs/实施状态.md)、[导出与备份恢复](docs/导出与备份恢复.md)及[版本说明](docs/releases/v0.7.0.md)。
+当前版本 **0.7.1**。本轮批次A增加[后勤开票办理任务](docs/后勤开票办理任务.md)，复用现有资料核验/加密版本/财务快照与导出/授权实现；对应授权中心v0.4.3。目标Windows2019与公网2Mbps仍待实机验证。见[实施状态](docs/实施状态.md)、[导出与备份恢复](docs/导出与备份恢复.md)及[版本说明](docs/releases/v0.7.1.md)。
 
 ## 安装
 
@@ -50,3 +50,5 @@ VERSION与frontend/package.json版本一致，推送v版本Tag触发仓库测试
 [第三方许可证](THIRD_PARTY_NOTICES.md) · [MIT](LICENSE)
 
 本轮批次进度与实际验证：[下一轮实施状态](docs/下一轮实施状态.md)。
+
+本轮进度：[下一轮实施状态](docs/下一轮实施状态.md)。
