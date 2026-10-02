@@ -222,3 +222,14 @@ export const billingTaskApi = {
 }
 
 export default api
+
+// Downloads have a generation allowance, then a progress deadline rather than a five-minute total limit.
+export async function downloadFile(path:string, method:'GET'|'POST'='GET', data?:unknown):Promise<Blob> {
+  const controller=new AbortController()
+  let timer=setTimeout(()=>controller.abort(),180000)
+  try {
+    const response=await api.request<Blob>({url:path,method,data,responseType:'blob',timeout:0,signal:controller.signal,
+      onDownloadProgress:()=>{clearTimeout(timer);timer=setTimeout(()=>controller.abort(),60000)}})
+    return response.data
+  } finally {clearTimeout(timer)}
+}

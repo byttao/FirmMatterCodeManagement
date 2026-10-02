@@ -32,7 +32,8 @@ MAX_SECONDS=int(os.getenv('FIRM_EXPORT_MAX_SECONDS','300'))
 MAX_BYTES=int(os.getenv('FIRM_EXPORT_MAX_BYTES',str(50*1024*1024)))
 MAX_PENDING=int(os.getenv('FIRM_EXPORT_MAX_PENDING','20'))
 DOWNLOAD_RATE=max(1024,int(os.getenv('FIRM_EXPORT_DOWNLOAD_KIB','100'))*1024)
-download_slot=threading.BoundedSemaphore(1)
+from transfer import budget
+download_slot=budget.slot
 router=APIRouter(prefix='/api/export-jobs')
 PROJECT_FIELDS={'project_id':'项目ID','customer_name':'客户名称','customer_tax_id':'税号',
  'firm':'事务所','report_type':'报告类型','report_year':'业务年度','report_no':'报告编号',
@@ -157,11 +158,11 @@ def download(job_id:str,request:Request,user=Depends(get_current_user),db=Depend
     if job.status!='succeeded':raise HTTPException(409,'文件尚未生成完成')
     path=DIRECTORY/(job.file_id+'.xlsx')
     if not path.is_file():raise HTTPException(410,'文件已清理，请重新导出')
-    if not download_slot.acquire(blocking=False):raise HTTPException(429,'已有文件正在下载，请稍后重试',headers={'Retry-After':'5'})
+    lease=budget.acquire()
     try:
         event(db,user,'export.download',job,request=request);db.commit()
     except BaseException:
-        download_slot.release();raise
+        lease.release();raise
     async def stream():
         started=time.monotonic();sent=0
         try:
@@ -170,11 +171,10 @@ def download(job_id:str,request:Request,user=Depends(get_current_user),db=Depend
                     chunk=await asyncio.to_thread(source.read,16384)
                     if not chunk:break
                     sent+=len(chunk)
-                    await asyncio.sleep(max(0,sent/DOWNLOAD_RATE-(time.monotonic()-started)))
                     yield chunk
         finally:
             log_event('export.transfer.finished',job_id=job_id,duration_ms=round((time.monotonic()-started)*1000),result='complete' if sent==job.file_size else 'interrupted')
-    return LimitedStreamingResponse(stream(),slot=download_slot,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    return LimitedStreamingResponse(stream(),slot=lease,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         headers={'Content-Disposition':f'attachment; filename="{job.export_type}_{job.id[:8]}.xlsx"',
                  'Content-Length':str(job.file_size),'Cache-Control':'no-store'})
 

@@ -41,16 +41,21 @@ def create(directory,database_name,files,password,product,schema,version):
             elif required:raise ValueError('缺少必需身份或密钥文件，不能创建完整备份')
         if sum(path.stat().st_size for path in paths.values())>MAX_SIZE:
             raise ValueError('备份超过200MiB，请联系维护人员')
-        contents={name:path.read_bytes() for name,path in paths.items()}
-        if sum(map(len,contents.values()))>MAX_SIZE:raise ValueError('备份超过200MiB，请联系维护人员')
+        def digest(path):
+            value=hashlib.sha256()
+            with path.open('rb') as source:
+                for chunk in iter(lambda:source.read(65536),b''):value.update(chunk)
+            return value.hexdigest()
         manifest={'product':product,'schema':schema,'version':version,'created_at':time.time(),
-                  'files':{name:hashlib.sha256(value).hexdigest() for name,value in contents.items()}}
-        output=io.BytesIO()
-        with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
+                  'files':{name:digest(path) for name,path in paths.items()}}
+        archive_path=Path(temporary)/'snapshot.zip'
+        with zipfile.ZipFile(archive_path,'w',zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False))
-            for name,value in contents.items():archive.writestr(name,value)
+            for name,path in paths.items():archive.write(path,name)
+        if archive_path.stat().st_size>MAX_SIZE:raise ValueError('压缩备份超过200MiB')
+        plain=archive_path.read_bytes()
         salt,nonce=secrets.token_bytes(16),secrets.token_bytes(12)
-        blob=MAGIC+salt+nonce+AESGCM(key(password,salt)).encrypt(nonce,output.getvalue(),MAGIC)
+        blob=MAGIC+salt+nonce+AESGCM(key(password,salt)).encrypt(nonce,plain,MAGIC)
         if len(blob)>MAX_SIZE:raise ValueError('加密备份超过200MiB')
         return blob
 

@@ -1,3 +1,5 @@
+from transfer import check_single_process
+check_single_process()
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

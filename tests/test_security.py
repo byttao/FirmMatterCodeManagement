@@ -706,6 +706,11 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             try:
                 response=await self.client.get('/api/export-jobs/'+job['id']+'/download')
                 self.assertEqual(response.status_code,429);self.assertEqual(response.headers['Retry-After'],'5')
+                from unittest.mock import patch
+                with patch('backups.create') as compression:
+                    busy=await self.client.post('/api/system/backup',json={'password':'Test-backup-password'})
+                    self.assertEqual(busy.status_code,429);compression.assert_not_called()
+                self.assertEqual((await self.client.post('/api/diagnostics/export')).status_code,429)
             finally:exports.download_slot.release()
             self.assertEqual((await self.client.get('/api/export-jobs/'+job['id']+'/download')).status_code,200)
             # A completed response releases its slot for the next authenticated retry.
@@ -828,6 +833,20 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('firm_session',str(rows))
         self.assertEqual((await self.client.post('/api/diagnostics/export',headers={'X-CSRF-Token':'bad'})).status_code,403)
         self.assertEqual((await self.client.get('/api/diagnostics/logs',params={'since':'2026-01-01','until':'2026-10-01'})).status_code,422)
+
+    async def test_log_disk_refusal_does_not_reverse_committed_project(self):
+        from unittest.mock import patch
+        import runtime_log
+        await self.login()
+        before=runtime_log.health.snapshot()['log_drops']
+        with patch.object(runtime_log.logger,'info',side_effect=PermissionError('test disk refusal')):
+            project=await self.new_project()
+        with SessionLocal() as db:self.assertIsNotNone(db.get(models.Project,project['id']))
+        state=runtime_log.health.snapshot()
+        self.assertGreater(state['log_drops'],before)
+        self.assertEqual(state['last_log_failure_code'],'log_write_failed')
+        runtime_log.event('probe.recovered')
+        self.assertFalse(runtime_log.health.pending)
 
     async def test_chinese_unexpected_exception_and_safe_diagnostics(self):
         from fastapi import FastAPI, Request

@@ -42,7 +42,8 @@ def summary():
     return {"version":APP_VERSION,**runtime_log.health.snapshot()}
 
 scan_slot = threading.BoundedSemaphore(1)
-export_slot = threading.BoundedSemaphore(1)
+from transfer import budget, byte_chunks
+export_slot = budget.slot
 
 class Filters:
     def __init__(self, since: datetime | None = None, until: datetime | None = None,
@@ -80,15 +81,14 @@ def logs(filters: Filters = Depends(), cursor: str | None = Query(None,max_lengt
 
 @router.post("/export")
 def export_logs(filters: Filters = Depends(), user=Depends(administrator)):
-    if not export_slot.acquire(blocking=False):
-        raise HTTPException(429, "已有诊断导出正在处理，请稍后重试",headers={"Retry-After":"5"})
-    try: return build_export(filters, user.id)
+    lease=budget.acquire()
+    try: return build_export(filters, user.id, lease)
     except BaseException:
-        export_slot.release()
+        lease.release()
         raise
 
 
-def build_export(filters, subject):
+def build_export(filters, subject, lease):
     result = selected_scan(filters, subject, page_size=400)
     output = io.BytesIO()
     summary = {k:v for k,v in result.items() if k != 'items'}
@@ -105,10 +105,5 @@ def build_export(filters, subject):
         archive.writestr("logs.jsonl", b"".join(lines))
         archive.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
     payload = output.getvalue()
-    async def chunks():
-        for index in range(0, len(payload), 16384):
-            chunk = payload[index:index+16384]
-            yield chunk
-            await asyncio.sleep(len(chunk)/102400)
-    return LimitedStreamingResponse(chunks(), slot=export_slot, media_type="application/zip", headers={
+    return LimitedStreamingResponse(byte_chunks(payload), slot=lease, media_type="application/zip", headers={
         "Content-Disposition": "attachment; filename=diagnostics.zip", "Cache-Control": "no-store"})

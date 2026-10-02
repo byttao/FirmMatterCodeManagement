@@ -20,7 +20,8 @@ import models
 
 FILES={'billing.key':True,'device-identity.json':True,'license-state.json':False,'server.json':False,'manager-settings.json':False}
 router=APIRouter(prefix='/api/system/backup')
-slot=threading.BoundedSemaphore(1)
+from transfer import budget, byte_chunks
+slot=budget.slot
 
 
 class BackupRequest(InputModel):
@@ -34,7 +35,7 @@ def backup(data:BackupRequest,request:Request,user=Depends(get_current_user),db=
     throttle.consume('backup',user.id,2,60)
     db.rollback()
     from license_manager import manager
-    if not slot.acquire(blocking=False):raise HTTPException(429,'正在生成备份，请稍后重试')
+    lease=budget.acquire()
     try:
         with manager._guard:
             manager.load()
@@ -42,10 +43,10 @@ def backup(data:BackupRequest,request:Request,user=Depends(get_current_user),db=
             blob=create(DATA_DIR,'db.sqlite',FILES,data.password,'YMH-FMC',SCHEMA_VERSION,APP_VERSION)
         event(db,user,'backup.created',user,request=request);db.commit()
     except (ValueError,OSError):
-        slot.release();raise HTTPException(503,'备份失败，请检查磁盘、身份及密钥并提供请求编号')
+        lease.release();raise HTTPException(503,'备份失败，请检查磁盘、身份及密钥并提供请求编号')
     except BaseException:
-        slot.release();raise
-    return LimitedStreamingResponse(io.BytesIO(blob),slot=slot,media_type='application/octet-stream',
+        lease.release();raise
+    return LimitedStreamingResponse(byte_chunks(blob),slot=lease,media_type='application/octet-stream',
         headers={'Content-Disposition':'attachment; filename="firm-encrypted-backup.ymhb"','Cache-Control':'no-store'})
 
 

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import api from '@/api/auth'
+import api, {downloadFile} from '@/api/auth'
 import {useAuth} from '@/store/AuthContext'
 import {can} from '@/types'
 async function read<T>(path: string) { return (await api.get<T>(path.replace('/api/', '/'))).data }
-async function exportFile(path: string) { return (await api.post<Blob>(path.replace('/api/', '/'), null, {responseType:'blob'})).data }
+async function exportFile(path: string) { return downloadFile(path.replace('/api/', '/'),'POST') }
 
 type Log = { timestamp: string; level: string; event: string; actor_id?: number; category?: string; request_id?: string; route?: string; client_ip?: string; reason_code?: string; status_code?: number; duration_ms?: number; customer_name?: string; customer_id?: number; instance_id?: string; identity_verified?: boolean; exception_type?: string; exception_location?: string }
 type Result = { items: Log[]; has_more: boolean; truncated: boolean; next_cursor?: string | null; scan_complete?: boolean; since?: string; until?: string; available_range?: {earliest?:string; latest?:string; index_complete?:boolean}; retention_policy?:string }
