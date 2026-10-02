@@ -87,6 +87,7 @@ export default function Layout() {
     { path: '/', label: '数据看板', icon: LayoutDashboard, show: true },
     { path: '/customers', label: '客户管理', icon: Building2, show: can(user, 'customer.lookup') },
     { path: '/billing-worklist', label: '开票资料核验', icon: Building2, show: can(user, 'billing.verify') },
+    { path: '/billing-tasks', label: can(user,'billing_task.manage') ? '开票办理任务' : '我的开票任务', icon: Building2, show: can(user,'billing_task.read.all') || can(user,'billing_task.read.assigned') },
     { path: '/audit-events', label: '操作审计', icon: ShieldCheck, show: can(user, 'audit.read') },
     { path: '/project-change-requests', label: '项目申请', icon: Briefcase, show: can(user, 'project.transfer') || can(user, 'project.edit.led') },
     { path: '/projects', label: '项目管理', icon: Briefcase, show: canUse('project_management') },

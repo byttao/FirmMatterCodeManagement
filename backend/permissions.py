@@ -33,6 +33,13 @@ ROLE_PERMISSIONS = {
 }
 SPECIAL_GRANTS = {"project.export.related", "billing.export_sensitive"}
 
+# 办理资料权限不扩张客户全档、财务或日志权限；财务兼任办理须显式组合clerk。
+for _role in ('office_admin', 'finance'):
+    ROLE_PERMISSIONS[_role].update({'billing_task.manage', 'billing_task.read.all',
+        'billing_task.reveal.assigned', 'billing_task.confirm'})
+ROLE_PERMISSIONS['clerk'].update({'billing_task.read.assigned',
+    'billing_task.reveal.assigned', 'billing_task.submit.assigned'})
+
 
 def effective_permissions(user):
     return set().union(*(ROLE_PERMISSIONS.get(role, set()) for role in user.roles),

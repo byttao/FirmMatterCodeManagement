@@ -3,7 +3,7 @@ from sqlalchemy import inspect, text
 from database import Base
 import models  # register tables
 
-SCHEMA_VERSION = 600
+SCHEMA_VERSION = 700
 
 
 def initialize_schema(engine):
@@ -48,7 +48,7 @@ def initialize_schema(engine):
              OR NEW.version_no IS NOT OLD.version_no OR NEW.verified_by IS NOT OLD.verified_by OR NEW.verified_at IS NOT OLD.verified_at
              OR NEW.status NOT IN ('verified','superseded'))
             BEGIN SELECT RAISE(ABORT, 'verified billing payload is immutable'); END"""))
-        for table in ('invoice_billing_snapshots', 'audit_events'):
+        for table in ('invoice_billing_snapshots', 'audit_events', 'billing_task_results'):
             for action in ('UPDATE', 'DELETE'):
                 connection.execute(text(f"CREATE TRIGGER {table}_no_{action.lower()} BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT, 'immutable record'); END"))
         connection.execute(text("""CREATE TRIGGER finance_no_delete BEFORE DELETE ON financial_entries

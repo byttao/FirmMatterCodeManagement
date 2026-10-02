@@ -67,6 +67,8 @@ from backups import router as backup_router
 app.include_router(backup_router)
 from diagnostics import router as diagnostics_router
 app.include_router(diagnostics_router)
+from billing_tasks import router as billing_task_router
+app.include_router(billing_task_router)
 _license_heartbeat_lock = asyncio.Lock()
 
 

@@ -11,7 +11,7 @@ router = APIRouter(prefix='/api')
 
 @router.get('/audit-events')
 def events(page: int = Query(1, ge=1), target_type: str | None = Query(None, max_length=32),
-           target_id: int | None = None, customer_id: int | None = None, action: str | None = Query(None, max_length=64),
+           target_id: str | None = Query(None, max_length=100), customer_id: int | None = None, action: str | None = Query(None, max_length=64),
            db: Session = Depends(get_db), user=Depends(get_current_user)):
     require(user, 'audit.read')
     query = db.query(models.AuditEvent)

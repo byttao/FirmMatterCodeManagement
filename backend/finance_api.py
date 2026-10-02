@@ -77,6 +77,23 @@ def create_entry(project_id: str, kind: str, data: schemas.FinancialEntryCreate,
         values = payload(version)
     elif any(v is not None for v in (data.billing_profile_id, data.billing_version_id, data.expected_profile_revision)):
         raise HTTPException(422, '收款不绑定开票资料')
+    entry = record_entry(db, user, project, code, data, request, profile if values is not None else None,
+                         version if values is not None else None)
+    remember(db, user, operation, key, payload_hash, {'entry_id': entry.id})
+    db.commit()
+    return entry
+
+
+def record_entry(db, user, project, code, data, request, profile=None, version=None, snapshot_customer_id=None):
+    """同事务创建流水/不可变快照并聚合；普通入口继续严格校验当前版本。"""
+    values = None
+    if code == 'invoice':
+        customer_id = snapshot_customer_id or project.customer_id
+        if not profile or not version or version.profile_id != profile.id or profile.customer_id != customer_id:
+            raise HTTPException(422, '开票资料所属关系不一致')
+        if not version.verified_at or version.status not in ('verified', 'superseded'):
+            raise HTTPException(409, '只能使用已经财务核验的开票资料')
+        values = payload(version)
     entry = models.FinancialEntry(project_id=project.id, kind=code, amount_cents=cents(data.amount),
         occurred_on=data.occurred_on, reference=data.reference, note=data.note, created_by=user.id,
         replacement_of_id=data.replacement_of_id)
@@ -84,7 +101,7 @@ def create_entry(project_id: str, kind: str, data: schemas.FinancialEntryCreate,
     if values is not None:
         from billing import SENSITIVE_FIELDS
         encrypted, key_id = encrypt({k: v for k, v in values.items() if k in SENSITIVE_FIELDS}, f'invoice-snapshot-entry:{entry.id}')
-        snapshot = models.InvoiceSnapshot(financial_entry_id=entry.id, customer_id=project.customer_id,
+        snapshot = models.InvoiceSnapshot(financial_entry_id=entry.id, customer_id=customer_id,
             profile_id=profile.id, version_id=version.id, actor_id=user.id,
             public_json=json.dumps({**{k: v for k, v in values.items() if k not in SENSITIVE_FIELDS},
                 'version_no': version.version_no, 'verified_by': version.verified_by, 'verified_at': version.verified_at.isoformat()}, ensure_ascii=False),
@@ -94,8 +111,6 @@ def create_entry(project_id: str, kind: str, data: schemas.FinancialEntryCreate,
     refresh_project_finance(db, project)
     project.revision += 1
     event(db, user, f'finance.{code}.create', entry, request=request, project_id=project.id, customer_id=project.customer_id)
-    remember(db, user, operation, key, payload_hash, {'entry_id': entry.id})
-    db.commit()
     return entry
 
 

@@ -16,6 +16,7 @@ const LicenseManagement = lazy(() => import('@/pages/LicenseManagement'))
 const CustomerManagement = lazy(() => import('@/pages/CustomerManagement'))
 const CustomerDetail = lazy(() => import('@/pages/CustomerDetail'))
 const BillingWorklist = lazy(() => import('@/pages/BillingWorklist'))
+const BillingTasks = lazy(() => import('@/pages/BillingTasks'))
 const AuditEvents = lazy(() => import('@/pages/AuditEvents'))
 const ProjectRequests = lazy(() => import('@/pages/ProjectRequests'))
 const AccountSecurity = lazy(() => import('@/pages/AccountSecurity'))
@@ -66,6 +67,7 @@ function AppRoutes() {
         <Route path="customers" element={<CustomerManagement />} />
         <Route path="customers/:customerId" element={<CustomerDetail />} />
         <Route path="billing-worklist" element={<BillingWorklist />} />
+        <Route path="billing-tasks" element={<BillingTasks />} />
         <Route path="audit-events" element={<AuditEvents />} />
         <Route path="project-change-requests" element={<ProjectRequests />} />
         <Route path="account" element={<AccountSecurity />} />

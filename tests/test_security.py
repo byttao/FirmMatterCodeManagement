@@ -871,5 +871,228 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             rows,_=read_records(Path(directory),('operations.jsonl*',),since,until,{})
             self.assertEqual(rows,[{'timestamp':'2026-10-02T00:30:00Z','event':'probe'}])
 
+    async def task_fixture(self, customer_id=None):
+        await self.login()
+        customer_id = customer_id or self.customer_id
+        with SessionLocal() as db: customer_name=db.get(models.Customer,customer_id).name
+        project = await self.new_project(contract_amount=1000,customer_id=customer_id,customer_name=customer_name)
+        profile, version = await self.verified_profile(customer_id=customer_id)
+        with SessionLocal() as db:
+            assignee = db.query(models.User).filter_by(username='clerk').one().id
+        data = {'project_id': project['id'], 'customer_id': customer_id,
+                'billing_profile_id': profile['id'], 'billing_version_id': version['id'],
+                'assignee_id': assignee, 'amount': '123.45', 'note': '按本次任务办理'}
+        created = await self.client.post('/api/billing-tasks', json=data,
+            headers={'Idempotency-Key': 'task-create-'+str(project['id'])})
+        self.assertEqual(created.status_code, 200, created.text)
+        return created.json(), data, project, profile, version
+
+    async def test_billing_task_assignment_minimal_scope_and_finance_confirmation(self):
+        task, data, project, profile, version = await self.task_fixture()
+        await self.login('outsider')
+        self.assertEqual((await self.client.get('/api/billing-tasks/'+task['id'])).status_code, 404)
+        await self.login('clerk')
+        rows = (await self.client.get('/api/billing-tasks', params={'owner': self.admin_id})).json()
+        self.assertIn(task['id'], [item['id'] for item in rows['items']])
+        for field in ['contract_amount', 'received_amount', 'bank_account', 'contact_name']:
+            self.assertNotIn(field, str(rows))
+        reveal = await self.client.post('/api/billing-tasks/'+task['id']+'/reveal',json={'purpose':'核对本次开票'})
+        self.assertEqual(reveal.status_code, 200, reveal.text)
+        self.assertEqual(reveal.json()['fields']['bank_account'],'0012345678901234')
+        self.assertEqual(reveal.headers['Cache-Control'],'no-store')
+        self.assertEqual((await self.client.post('/api/billing-versions/'+str(version['id'])+'/reveal',json={'purpose':'猜旧接口'})).status_code,404)
+        for path in ['/api/diagnostics/logs','/api/diagnostics/summary']:
+            self.assertEqual((await self.client.get(path)).status_code,403)
+        result = {'expected_revision': task['revision'], 'amount':'123.45','invoice_number':'TASK-INV-'+task['id'][:8], 'invoice_date':'2026-10-02'}
+        url = '/api/billing-tasks/'+task['id']+'/submit-result'
+        submitted = await self.client.post(url,json=result,headers={'Idempotency-Key':'submit-'+task['id']})
+        self.assertEqual(submitted.status_code,200,submitted.text)
+        again = await self.client.post(url,json=result,headers={'Idempotency-Key':'submit-'+task['id']})
+        self.assertEqual(again.status_code,200,again.text)
+        with SessionLocal() as db:
+            self.assertEqual(db.query(models.FinancialEntry).filter_by(project_id=project['id']).count(),0)
+        await self.login('finance')
+        confirm={'expected_revision':submitted.json()['revision'],'expected_project_revision':project['revision'],'reason':'财务核对实际凭证'}
+        url='/api/billing-tasks/'+task['id']+'/confirm'
+        replies=await asyncio.gather(*(self.client.post(url,json=confirm,headers={'Idempotency-Key':'confirm-'+task['id']}) for _ in range(3)))
+        self.assertTrue(all(r.status_code==200 for r in replies),[r.text for r in replies])
+        self.assertEqual(len({r.json()['financial_entry_id'] for r in replies}),1)
+        with SessionLocal() as db:
+            self.assertEqual(db.query(models.FinancialEntry).filter_by(project_id=project['id']).count(),1)
+        await self.login('clerk')
+        self.assertEqual((await self.client.post('/api/billing-tasks/'+task['id']+'/reveal',json={'purpose':'完成后猜取'})).status_code,409)
+
+    async def test_billing_task_cross_objects_duplicate_create_and_new_role_permissions(self):
+        task,data,project,profile,version=await self.task_fixture()
+        repeated=await self.client.post('/api/billing-tasks',json=data,headers={'Idempotency-Key':'task-create-'+str(project['id'])})
+        self.assertEqual(repeated.json()['id'],task['id'])
+        audits=await self.client.get('/api/audit-events',params={'target_type':'billing_tasks','target_id':task['id']})
+        self.assertEqual(audits.status_code,200,audits.text)
+        self.assertEqual(audits.json()['total'],1)
+        self.assertTrue(audits.json()['items'][0]['request_id'])
+        conflict=await self.client.post('/api/billing-tasks',json={**data,'amount':'1.00'},headers={'Idempotency-Key':'task-create-'+str(project['id'])})
+        self.assertEqual(conflict.status_code,409)
+        other_profile,_=await self.verified_profile()
+        self.assertEqual((await self.client.post('/api/billing-tasks',json={**data,'billing_profile_id':other_profile['id']},headers={'Idempotency-Key':'cross-task-'+task['id']})).status_code,422)
+        self.assertEqual((await self.client.post('/api/billing-tasks',json={**data,'assignee_id':self.leader_id},headers={'Idempotency-Key':'bad-assignee-'+task['id']})).status_code,422)
+        for username in ['number','leader','finance','clerk']:
+            await self.login(username)
+            self.assertEqual((await self.client.get('/api/diagnostics/logs')).status_code,403)
+            self.assertEqual((await self.client.post('/api/system/backup',json={'password':'Test-backup-password'})).status_code,403)
+        await self.login('clerk')
+        self.assertEqual((await self.client.post('/api/billing-tasks',json=data,headers={'Idempotency-Key':'clerk-create-'+task['id']})).status_code,403)
+        self.assertEqual((await self.client.post('/api/billing-tasks/'+task['id']+'/reveal',json={'purpose':'核对','billing_version_id':other_profile['id']})).status_code,422)
+        self.assertEqual((await self.client.get('/api/billing-tasks/'+task['id']+'bad')).status_code,404)
+
+    async def test_billing_task_reassign_revoke_and_stale_window(self):
+        task,_,_,_,_=await self.task_fixture()
+        with SessionLocal() as db:
+            other=models.User(username='task-clerk-'+task['id'][:8],real_name='另一后勤',fiscal_year=2026,
+                hashed_password=get_password_hash('Test-password-2026'),role_records=[models.UserRoleRecord(role_code='clerk')])
+            db.add(other);db.commit(); other_id=other.id;other_name=other.username
+        url='/api/billing-tasks/'+task['id']
+        await self.login(other_name)
+        self.assertEqual((await self.client.get(url)).status_code,404)
+        self.assertNotIn(task['id'],[x['id'] for x in (await self.client.get('/api/billing-tasks')).json()['items']])
+        self.assertEqual((await self.client.post(url+'/reveal',json={'purpose':'他人任务猜取'})).status_code,404)
+        await self.login()
+        moved=await self.client.post(url+'/reassign',json={'expected_revision':1,'assignee_id':other_id,'reason':'交接办理'})
+        self.assertEqual(moved.status_code,200,moved.text)
+        self.assertEqual((await self.client.post(url+'/revoke',json={'expected_revision':1,'reason':'旧窗口操作'})).status_code,409)
+        await self.login('clerk')
+        self.assertEqual((await self.client.get(url)).status_code,404)
+        self.assertEqual((await self.client.post(url+'/reveal',json={'purpose':'旧窗口'})).status_code,404)
+        self.assertNotIn(task['id'],[x['id'] for x in (await self.client.get('/api/billing-tasks')).json()['items']])
+        await self.login(other_name)
+        self.assertEqual((await self.client.post(url+'/reveal',json={'purpose':'本人办理'})).status_code,200)
+        await self.login()
+        revoked=await self.client.post(url+'/revoke',json={'expected_revision':moved.json()['revision'],'reason':'本次取消'})
+        self.assertEqual(revoked.status_code,200)
+        await self.login(other_name)
+        self.assertEqual((await self.client.post(url+'/reveal',json={'purpose':'撤回后猜取'})).status_code,409)
+
+    async def test_billing_task_version_change_requires_revalidation_and_preserves_history(self):
+        task,_,project,profile,version=await self.task_fixture()
+        url='/api/billing-tasks/'+task['id']
+        await self.login('clerk')
+        submission={'expected_revision':1,'amount':'123.45','invoice_number':'HIST-'+task['id'][:8],'invoice_date':'2026-10-02'}
+        submitted=await self.client.post(url+'/submit-result',json=submission,headers={'Idempotency-Key':'history-submit-'+task['id']})
+        self.assertEqual(submitted.status_code,200)
+        self.assertEqual((await self.client.post(url+'/reveal',json={'purpose':'已提交读取'})).status_code,409)
+        await self.login()
+        changed=await self.client.post(f'/api/billing-profiles/{profile["id"]}/versions',json={'expected_profile_revision':profile['revision'],'fields':{'bank_account':'0099999999999999'}})
+        newer=changed.json()
+        verified=await self.client.post(f'/api/billing-versions/{newer["id"]}/verify',json={'expected_revision':newer['revision'],'expected_profile_revision':profile['revision']+1,'decision':'approve','verification_note':'新银行资料'})
+        self.assertEqual(verified.status_code,200,verified.text)
+        confirmation={'expected_revision':2,'expected_project_revision':project['revision'],'reason':'已实际开票，核对旧开户资料'}
+        self.assertEqual((await self.client.post(url+'/confirm',json=confirmation,headers={'Idempotency-Key':'historic-confirm-'+task['id']})).status_code,409)
+        confirmed=await self.client.post(url+'/confirm',json={**confirmation,'confirm_historical':True},headers={'Idempotency-Key':'historic-confirm-'+task['id']})
+        self.assertEqual(confirmed.status_code,200,confirmed.text)
+        snapshot=await self.client.get(f'/api/projects/{project["id"]}/finance/invoices/{confirmed.json()["financial_entry_id"]}/billing-snapshot')
+        self.assertEqual(snapshot.json()['fields']['bank_account'],'0012345678901234')
+        # 普通财务录入仍不可绕过当前版本校验。
+        normal={'expected_project_revision':project['revision']+1,'amount':'1.00','occurred_on':'2026-10-02',
+            'billing_profile_id':profile['id'],'billing_version_id':version['id'],'expected_profile_revision':verified.json()['profile_revision']}
+        self.assertEqual((await self.client.post(f'/api/projects/{project["id"]}/finance/invoices',json=normal,headers={'Idempotency-Key':'old-normal-'+task['id']})).status_code,409)
+
+    async def test_billing_task_needs_review_and_return_keeps_result_history(self):
+        task,_,project,profile,version=await self.task_fixture()
+        url='/api/billing-tasks/'+task['id']
+        with SessionLocal() as db:
+            db.get(models.Project,project['id']).is_deleted=True;db.commit()
+        await self.login('clerk')
+        self.assertEqual((await self.client.get(url)).json()['status'],'needs_review')
+        self.assertEqual((await self.client.post(url+'/reveal',json={'purpose':'删除后操作'})).status_code,409)
+        await self.login()
+        with SessionLocal() as db:
+            db.get(models.Project,project['id']).is_deleted=False;db.commit()
+        current=(await self.client.get(url)).json()
+        revalidated=await self.client.post(url+'/revalidate',json={'expected_revision':current['revision'],'billing_profile_id':profile['id'],'billing_version_id':version['id'],'reason':'核对项目和原资料恢复'})
+        self.assertEqual(revalidated.status_code,200,revalidated.text)
+        await self.login('clerk')
+        result=await self.client.post(url+'/submit-result',json={'expected_revision':revalidated.json()['revision'],'amount':'123.45','invoice_number':'RETURN-'+task['id'][:8],'invoice_date':'2026-10-02'},headers={'Idempotency-Key':'return-submit-'+task['id']})
+        self.assertEqual(result.status_code,200,result.text)
+        await self.login('finance')
+        returned=await self.client.post(url+'/return',json={'expected_revision':result.json()['revision'],'reason':'凭证核对退回'})
+        self.assertEqual(returned.status_code,200,returned.text)
+        self.assertEqual(len(returned.json()['result_history']),1)
+        self.assertIsNone(returned.json()['result'])
+        self.assertEqual(returned.json()['status'],'assigned')
+        with SessionLocal() as db:
+            with self.assertRaises(Exception):
+                db.execute(__import__('sqlalchemy').text('DELETE FROM billing_task_results WHERE task_id=:id'),{'id':task['id']});db.commit()
+            db.rollback()
+
+    async def test_billing_task_disabled_assignee_and_customer_change(self):
+        task,_,_,_,_=await self.task_fixture()
+        with SessionLocal() as db:
+            clerk=db.query(models.User).filter_by(username='clerk').one();clerk_id=clerk.id
+            clerk.is_active=False;db.commit()
+        try:
+            await self.login()
+            self.assertEqual((await self.client.post('/api/billing-tasks/'+task['id']+'/reveal',json={'purpose':'禁用办理人'})).status_code,422)
+        finally:
+            with SessionLocal() as db:db.get(models.User,clerk_id).is_active=True;db.commit()
+        with SessionLocal() as db:
+            customer=db.get(models.Customer,self.customer_id);previous=customer.is_active;customer.is_active=False;db.commit()
+        try:
+            await self.login('clerk')
+            self.assertEqual((await self.client.post('/api/billing-tasks/'+task['id']+'/reveal',json={'purpose':'停用客户'})).status_code,409)
+            self.assertEqual((await self.client.get('/api/billing-tasks/'+task['id'])).json()['status'],'needs_review')
+        finally:
+            with SessionLocal() as db:db.get(models.Customer,self.customer_id).is_active=previous;db.commit()
+
+    async def test_billing_task_link_existing_invoice_matches_all_fields(self):
+        task,_,project,profile,version=await self.task_fixture()
+        reference='LINK-'+task['id'][:8]
+        invoice=await self.client.post(f'/api/projects/{project["id"]}/finance/invoices',json={
+            'amount':'123.45','occurred_on':'2026-10-02','reference':reference,
+            'expected_project_revision':project['revision'],'billing_profile_id':profile['id'],
+            'billing_version_id':version['id'],'expected_profile_revision':profile['revision']},
+            headers={'Idempotency-Key':'link-manual-'+task['id']})
+        self.assertEqual(invoice.status_code,200,invoice.text)
+        await self.login('clerk')
+        submitted=await self.client.post('/api/billing-tasks/'+task['id']+'/submit-result',json={
+            'expected_revision':1,'amount':'123.45','invoice_number':reference,'invoice_date':'2026-10-02'},
+            headers={'Idempotency-Key':'link-submit-'+task['id']})
+        self.assertEqual(submitted.status_code,200,submitted.text)
+        await self.login('finance')
+        linked=await self.client.post('/api/billing-tasks/'+task['id']+'/confirm',json={
+            'expected_revision':submitted.json()['revision'],'expected_project_revision':project['revision']+1,
+            'financial_entry_id':invoice.json()['id'],'reason':'核对已存在手工流水'},headers={'Idempotency-Key':'link-confirm-'+task['id']})
+        self.assertEqual(linked.status_code,200,linked.text)
+        self.assertEqual(linked.json()['financial_entry_id'],invoice.json()['id'])
+        with SessionLocal() as db:
+            self.assertEqual(db.query(models.FinancialEntry).filter_by(project_id=project['id']).count(),1)
+            self.assertEqual(db.query(models.InvoiceSnapshot).filter_by(financial_entry_id=invoice.json()['id']).count(),1)
+
+    async def test_billing_task_pending_version_and_customer_merge_need_review(self):
+        task,_,_,profile,_=await self.task_fixture()
+        changed=await self.client.post(f'/api/billing-profiles/{profile["id"]}/versions',json={
+            'expected_profile_revision':profile['revision'],'fields':{'bank_account':'0022222222222222'}})
+        new=changed.json()
+        verified=await self.client.post(f'/api/billing-versions/{new["id"]}/verify',json={
+            'expected_revision':new['revision'],'expected_profile_revision':profile['revision']+1,
+            'decision':'approve','verification_note':'待办理期间换银行'})
+        self.assertEqual(verified.status_code,200)
+        await self.login('clerk')
+        url='/api/billing-tasks/'+task['id']
+        self.assertEqual((await self.client.get(url)).json()['status'],'needs_review')
+        self.assertEqual((await self.client.post(url+'/reveal',json={'purpose':'读取旧版本'})).status_code,409)
+        await self.login()
+        with SessionLocal() as db:
+            source=models.Customer(name='任务合并来源',identity_status='confirmed',type='enterprise',tax_id=('TASK-MERGE-'+task['id'][:8]).upper());db.add(source);db.commit();source_id=source.id
+        merged_task,_,_,_,_=await self.task_fixture(source_id)
+        target=(await self.client.get('/api/customers/'+str(self.customer_id))).json()
+        source=(await self.client.get('/api/customers/'+str(source_id))).json()
+        merged=await self.client.post(f'/api/customers/{source_id}/merge',json={'target_id':self.customer_id,
+            'expected_revision':source['revision'],'expected_target_revision':target['revision'],
+            'reason':'核对同一主体资料合并','identity_checked':True,'dry_run':False})
+        self.assertEqual(merged.status_code,200,merged.text)
+        await self.login('clerk')
+        url='/api/billing-tasks/'+merged_task['id']
+        self.assertEqual((await self.client.post(url+'/reveal',json={'purpose':'合并后查看'})).status_code,409)
+        self.assertEqual((await self.client.get(url)).json()['status'],'needs_review')
+
 if __name__ == "__main__":
     unittest.main()

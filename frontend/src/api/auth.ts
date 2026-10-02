@@ -213,4 +213,12 @@ export const signerApi = {
   downloadTemplate: () => api.get('/signers/template', { responseType: 'blob' }),
 }
 
+export const billingTaskApi = {
+  list: (page = 1, status = '') => api.get('/billing-tasks', {params: {page, ...(status ? {status} : {})}}),
+  get: (id: string) => api.get(`/billing-tasks/${id}`),
+  assignees: () => api.get('/billing-tasks/assignees'),
+  create: (data: Record<string, unknown>, key: string) => api.post('/billing-tasks', data, {headers:{'Idempotency-Key':key}}),
+  action: (id: string, action: string, data: Record<string, unknown>, key?: string) => api.post(`/billing-tasks/${id}/${action}`, data, {headers:key ? {'Idempotency-Key':key} : {}}),
+}
+
 export default api

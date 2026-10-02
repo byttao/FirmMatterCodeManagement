@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.sql import func
 import enum
+from datetime import datetime
 from database import Base
 
 
@@ -271,7 +272,7 @@ class AuditEvent(Base):
     actor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     action = Column(String(64), nullable=False)
     target_type = Column(String(32), nullable=False)
-    target_id = Column(Integer, nullable=False)
+    target_id = Column(String(100), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id"))
     customer_id = Column(Integer, ForeignKey("customers.id"))
     request_id = Column(String(64))
@@ -389,6 +390,50 @@ class InvoiceSnapshot(Base):
     key_id = Column(String(32), nullable=False)
     actor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class BillingTask(Base):
+    __tablename__ = 'billing_tasks'
+    id = Column(String(32), primary_key=True)
+    project_id = Column(Integer, ForeignKey('projects.id'), nullable=False)
+    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
+    customer_revision = Column(Integer, nullable=False)
+    billing_profile_id = Column(Integer, ForeignKey('customer_billing_profiles.id'), nullable=False)
+    billing_version_id = Column(Integer, ForeignKey('customer_billing_versions.id'), nullable=False)
+    assignee_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    revision = Column(Integer, nullable=False, default=1)
+    status = Column(String(20), nullable=False, default='assigned')
+    amount_cents = Column(Integer, nullable=False)
+    note = Column(String(500), nullable=False, default='')
+    reason = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    assigned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    submitted_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    revoked_at = Column(DateTime)
+    submitted_result_id = Column(Integer, ForeignKey('billing_task_results.id'))
+    financial_entry_id = Column(Integer, ForeignKey('financial_entries.id'), unique=True)
+    __table_args__ = (
+        CheckConstraint("status IN ('assigned','result_submitted','completed','revoked','needs_review')"),
+        CheckConstraint('amount_cents > 0'),
+        Index('idx_billing_task_assigned', 'assignee_id', 'status', 'created_at', 'id'),
+        Index('idx_billing_task_project', 'project_id', 'created_at', 'id'),
+    )
+
+
+class BillingTaskResult(Base):
+    __tablename__ = 'billing_task_results'
+    id = Column(Integer, primary_key=True)
+    task_id = Column(String(32), ForeignKey('billing_tasks.id'), nullable=False, index=True)
+    task_revision = Column(Integer, nullable=False)
+    billing_version_id = Column(Integer, ForeignKey('customer_billing_versions.id'), nullable=False)
+    submitted_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    amount_cents = Column(Integer, nullable=False)
+    invoice_number = Column(String(100), nullable=False)
+    invoice_date = Column(Date, nullable=False)
+    note = Column(String(500), nullable=False, default='')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class ReportNumberHistory(Base):

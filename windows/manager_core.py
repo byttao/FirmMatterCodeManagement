@@ -37,7 +37,7 @@ REQUIRED_FILES = {
     "license-public-key.txt",
 }
 RUNTIME_DIRS = ("BackendServer-internal", "Manager-internal")
-DOCUMENT_FILES = {"docs/导出与备份恢复.md", "docs/安装与部署.md"}
+DOCUMENT_FILES = {"docs/导出与备份恢复.md", "docs/安装与部署.md", "docs/后勤开票办理任务.md"}
 REQUIRED_FILES.update(DOCUMENT_FILES)
 DEFAULT_CONFIG = {"bind_host": "0.0.0.0", "port": 8000, "public_host": ""}
 
