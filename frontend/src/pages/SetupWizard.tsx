@@ -1,3 +1,4 @@
+import { LOGIN_PASSWORD_HINT, LOGIN_PASSWORD_PATTERN, loginPasswordError } from '@/lib/passwordPolicy'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Building2, CheckCircle2, KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-react'
@@ -80,8 +81,9 @@ export default function SetupWizard() {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
     setError('')
-    if (form.admin_password.length < 12) {
-      setError('管理员密码至少需要 12 位')
+    const passwordError = loginPasswordError(form.admin_password)
+    if (passwordError) {
+      setError(passwordError)
       return
     }
     if (form.admin_password !== confirmPassword) {
@@ -174,7 +176,7 @@ export default function SetupWizard() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="admin_password">登录密码</Label>
-                <Input id="admin_password" type="password" value={form.admin_password} onChange={(e) => setForm({ ...form, admin_password: e.target.value })} placeholder="至少 12 位" required minLength={12} maxLength={72} />
+                <Input id="admin_password" type="password" value={form.admin_password} onChange={(e) => setForm({ ...form, admin_password: e.target.value })} placeholder={LOGIN_PASSWORD_HINT} title={LOGIN_PASSWORD_HINT} pattern={LOGIN_PASSWORD_PATTERN} required minLength={8} maxLength={72} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="confirm_password">确认密码</Label>

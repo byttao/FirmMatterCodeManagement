@@ -28,7 +28,7 @@ import schemas
 from schema_init import initialize_schema
 from finance import refresh_project_finance
 from auth import (
-    get_password_hash, verify_password,
+    get_password_hash, verify_password, validate_new_password,
     get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES,
     can_view_project, can_edit_project, can_delete_project,
     can_edit_financial_fields, can_generate_report_no, can_export,
@@ -454,8 +454,7 @@ async def setup_system(data: schemas.SetupRequest, request: Request, db: Session
     real_name = data.admin_real_name.strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,50}", username):
         raise HTTPException(status_code=400, detail="管理员账号需为 3-50 位字母、数字、下划线、点或短横线")
-    if len(data.admin_password) < 8:
-        raise HTTPException(status_code=400, detail="管理员密码至少需要 8 位")
+    validate_new_password(data.admin_password)
     if not real_name:
         raise HTTPException(status_code=400, detail="请输入管理员姓名")
     validate_config_year(data.fiscal_year)

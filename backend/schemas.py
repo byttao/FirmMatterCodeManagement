@@ -10,7 +10,7 @@ class InputModel(BaseModel):
 
 class PasswordChange(InputModel):
     current_password: constr(min_length=1, max_length=72)
-    new_password: constr(min_length=12, max_length=72)
+    new_password: constr(min_length=8, max_length=72)
 
 
 # ============ 用户相关 ============
@@ -25,7 +25,7 @@ class UserBase(InputModel):
 
 class UserCreate(UserBase):
     username: constr(regex=r"^[A-Za-z0-9_.-]{3,50}$")
-    password: constr(min_length=12, max_length=72)
+    password: constr(min_length=8, max_length=72)
 
 
 class UserResponse(UserBase):
@@ -47,7 +47,7 @@ class UserUpdate(InputModel):
     is_practitioner: Optional[bool] = None
     special_grants: Optional[List[Literal['project.export.related', 'billing.export_sensitive']]] = None
     expected_revision: int
-    password: Optional[constr(min_length=12, max_length=72)] = None
+    password: Optional[constr(min_length=8, max_length=72)] = None
     is_active: Optional[bool] = None
 
 

@@ -1,3 +1,4 @@
+import { LOGIN_PASSWORD_HINT, LOGIN_PASSWORD_PATTERN, loginPasswordError } from '@/lib/passwordPolicy'
 import { useEffect, useState } from 'react'
 import { userApi } from '@/api/auth'
 import { useAuth } from '@/store/AuthContext'
@@ -75,6 +76,10 @@ export default function UserManagement() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!editingUser || formData.password) {
+      const passwordError = loginPasswordError(formData.password)
+      if (passwordError) { alert(passwordError); return }
+    }
     setSaving(true)
 
     try {
@@ -290,6 +295,12 @@ export default function UserManagement() {
                 type="password"
                 value={formData.password}
                 onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
+                minLength={8}
+                maxLength={72}
+                pattern={LOGIN_PASSWORD_PATTERN}
+                title={LOGIN_PASSWORD_HINT}
+                placeholder={LOGIN_PASSWORD_HINT}
+                autoComplete="new-password"
                 required={!editingUser}
               />
             </div>

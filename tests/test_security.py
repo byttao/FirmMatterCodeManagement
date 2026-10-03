@@ -482,6 +482,67 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(latest['customer_name'],project['customer_name'])
         self.assertEqual((await self.client.post(f'/api/projects/{project["id"]}/correct-customer',json=data)).status_code,409)
 
+    def test_eight_character_setup_in_fresh_isolated_database(self):
+        import subprocess
+        with tempfile.TemporaryDirectory(prefix='password-initializer-') as directory:
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+            env['FIRM_MANAGER_DATA_DIR'] = directory
+            env['PYTHONPATH'] = '/Users/aowu/Documents/同步盘/项目开发/事务所编号管理软件/代码/backend' + os.pathsep + str(Path(__file__).resolve().parents[1])
+            result = subprocess.run([sys.executable, '-c', "\nimport asyncio\nimport httpx\nimport main\nfrom database import engine\nasync def check():\n    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app, client=('127.0.0.1', 1234)), base_url='http://testserver') as client:\n        data={'admin_username':'policy-admin','admin_password':'Abcd1234','admin_real_name':'测试','fiscal_year':2026,\n              'firms':[{'name':'隔离所','report_types':[{'report_type':'审计','template':'隔离{yyyy}{nnnn}'}]}]}\n        for invalid in ('Abcd123', 'abcdefgh', '12345678'):\n            response=await client.post('/api/setup', json={**data, 'admin_password':invalid})\n            assert response.status_code==422, response.text\n        response=await client.post('/api/setup',json=data)\n        assert response.status_code==200, response.text\n        response=await client.post('/api/auth/login',json={'username':'policy-admin','password':'Abcd1234'})\n        assert response.status_code==200, response.text\nasyncio.run(check())\nengine.dispose()\n"], env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_login_password_policy_accepts_eight_and_requires_letters_digits(self):
+        from fastapi import HTTPException
+        from auth import verify_password
+        for value in ('Abcd1234', 'A1' + 'x' * 70, 'Abcd1234!'):
+            self.assertTrue(verify_password(value, get_password_hash(value)))
+        for value in ('Abcd123', 'abcdefgh', '12345678', '中文密码1234', 'A1' + 'x' * 71, 'Abcd1234' + '中' * 22):
+            with self.subTest(value=value), self.assertRaises(HTTPException) as caught:
+                get_password_hash(value)
+            self.assertEqual(caught.exception.status_code, 422)
+            self.assertIn('字母和数字', caught.exception.detail)
+
+    async def test_eight_character_password_create_change_reset_and_legacy_login(self):
+        await self.login()
+        payload = {'username': 'policy-user', 'real_name': '密码规则测试', 'password': 'Abcd1234',
+                   'roles': ['clerk'], 'is_practitioner': False, 'special_grants': []}
+        for invalid in ('abcdefgh', '12345678', 'Abcd123'):
+            response = await self.client.post('/api/users', json={**payload, 'password': invalid})
+            self.assertEqual(response.status_code, 422, response.text)
+        created = await self.client.post('/api/users', json=payload)
+        self.assertEqual(created.status_code, 200, created.text)
+        user_id = created.json()['id']
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url='http://testserver') as user:
+            response = await user.post('/api/auth/login', json={'username': 'policy-user', 'password': 'Abcd1234'})
+            self.assertEqual(response.status_code, 200, response.text)
+            user.headers['X-CSRF-Token'] = user.cookies['firm_csrf']
+            for invalid in ('abcdefgh', '12345678', 'Abcd123'):
+                response = await user.post('/api/auth/change-password', json={'current_password': 'Abcd1234', 'new_password': invalid})
+                self.assertEqual(response.status_code, 422, response.text)
+            response = await user.post('/api/auth/change-password', json={'current_password': 'Abcd1234', 'new_password': 'Change12'})
+            self.assertEqual(response.status_code, 200, response.text)
+            response = await user.post('/api/auth/login', json={'username': 'policy-user', 'password': 'Change12'})
+            self.assertEqual(response.status_code, 200, response.text)
+            user.headers['X-CSRF-Token'] = user.cookies['firm_csrf']
+            current = (await self.client.get('/api/users')).json()
+            revision = next(item['permission_revision'] for item in current if item['id'] == user_id)
+            for invalid in ('abcdefgh', '12345678'):
+                response = await self.client.put(f'/api/users/{user_id}', json={'expected_revision': revision, 'password': invalid})
+                self.assertEqual(response.status_code, 422, response.text)
+            response = await self.client.put(f'/api/users/{user_id}', json={'expected_revision': revision, 'password': 'Reset123'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual((await user.get('/api/auth/me')).status_code, 401)
+            response = await user.post('/api/auth/login', json={'username': 'policy-user', 'password': 'Reset123'})
+            self.assertEqual(response.status_code, 200, response.text)
+            # Existing passwords are verified as stored, without an upgrade reset.
+            from auth import pwd_context
+            with SessionLocal() as db:
+                db.get(models.User, user_id).hashed_password = pwd_context.hash('legacyonlyletters')
+                db.commit()
+            response = await user.post('/api/auth/login', json={'username': 'policy-user', 'password': 'legacyonlyletters'})
+            self.assertEqual(response.status_code, 200, response.text)
+
     async def test_password_change_revokes_other_device(self):
         await self.login("leader")
         other = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://testserver")

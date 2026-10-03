@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 import secrets
@@ -18,9 +19,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return pwd_context.verify(plain_password, hashed_password)
 
 
+def validate_new_password(password: str) -> None:
+    """Apply only when setting a password; stored credentials remain valid."""
+    if (not isinstance(password, str) or not 8 <= len(password) <= 72
+            or len(password.encode("utf-8")) > 72
+            or not re.search(r"[A-Za-z]", password) or not re.search(r"[0-9]", password)):
+        raise HTTPException(422, "登录密码需为8至72位，且同时包含英文字母和数字；UTF-8编码不能超过72字节")
+
+
 def get_password_hash(password: str) -> str:
-    if not 12 <= len(password) <= 72 or len(password.encode("utf-8")) > 72:
-        raise HTTPException(422, "密码需为12至72位，UTF-8编码不能超过72字节")
+    validate_new_password(password)
     from http_security import password_slots
     with password_slots:
         return pwd_context.hash(password)

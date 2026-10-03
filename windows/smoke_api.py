@@ -8,7 +8,7 @@ import httpx
 sys.stdout.reconfigure(encoding='utf-8')
 
 base=sys.argv[1]
-password='Smoke-'+secrets.token_hex(16)
+password='A1'+secrets.token_hex(3)
 with httpx.Client(base_url=base,trust_env=False,timeout=30) as client:
     response=client.post('/api/setup',json={'admin_username':'smoke-admin','admin_password':password,
         'admin_real_name':'隔离自检','fiscal_year':2026,'firms':[{'name':'自检所','report_types':[{'report_type':'审计','template':'自检〔{yyyy}〕{nnnn}'}]}]})
@@ -24,6 +24,6 @@ with httpx.Client(base_url=base,trust_env=False,timeout=30) as client:
     if status['status']!='succeeded':raise RuntimeError('冻结导出worker未完成任务：'+str(status))
     file=client.get('/api/export-jobs/'+job+'/download');file.raise_for_status()
     if not file.content.startswith(b'PK'):raise RuntimeError('导出文件无效')
-    backup=client.post('/api/system/backup',json={'password':password});backup.raise_for_status()
+    backup=client.post('/api/system/backup',json={'password':'Backup-'+secrets.token_hex(16)});backup.raise_for_status()
     if not backup.content.startswith(b'YMH-BACKUP-1'):raise RuntimeError('加密备份无效')
 print('发布EXE初始化、登录、独立worker导出、认证下载和加密备份通过')
